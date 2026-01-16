@@ -1,0 +1,1326 @@
+{
+  "item": [
+    {
+      "id": "507a0769-a879-408c-9b69-d56928e41e58",
+      "name": "Create Payout Account",
+      "request": {
+        "name": "Create Payout Account",
+        "description": {},
+        "url": {
+          "path": ["payout_accounts"],
+          "host": ["{{baseUrl}}"],
+          "query": [],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "POST",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"account_type\": \"wallet\",\n  \"properties\": {},\n  \"credentials\": {}\n}",
+          "options": {
+            "raw": {
+              "headerFamily": "json",
+              "language": "json"
+            }
+          }
+        },
+        "auth": null
+      },
+      "response": [
+        {
+          "id": "6909fb3e-dc56-4468-aa25-b345f71a8821",
+          "name": "Successful operation",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_type\": \"wallet\",\n  \"properties\": {},\n  \"credentials\": {}\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"<uuid>\",\n  \"account_type\": \"wallet\",\n  \"currency\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n  },\n  \"properties\": {},\n  \"created_at\": \"<string>\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "9825f335-94b8-4899-9a7d-220048766e62",
+          "name": "Business Error or validation error.",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_type\": \"wallet\",\n  \"properties\": {},\n  \"credentials\": {}\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiBusinessError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "f8aea54a-7c37-41a4-ae93-25aa220bdc54",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_type\": \"wallet\",\n  \"properties\": {},\n  \"credentials\": {}\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthenticationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "64e7ee72-e59d-42f4-8520-bfa1043d1b32",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_type\": \"wallet\",\n  \"properties\": {},\n  \"credentials\": {}\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthorizationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        }
+      ],
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "id": "d36302a7-26dd-46ba-a861-005ea498e9cf",
+      "name": "List Payout Accounts",
+      "request": {
+        "name": "List Payout Accounts",
+        "description": {},
+        "url": {
+          "path": ["payout_accounts"],
+          "host": ["{{baseUrl}}"],
+          "query": [
+            {
+              "disabled": false,
+              "description": {
+                "content": "Page to list",
+                "type": "text/plain"
+              },
+              "key": "page",
+              "value": "1"
+            }
+          ],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "GET",
+        "body": {},
+        "auth": null
+      },
+      "response": [
+        {
+          "id": "62e4e137-d911-431a-9721-e86fcb16179b",
+          "name": "Successful operation",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts"],
+              "host": ["{{baseUrl}}"],
+              "query": [
+                {
+                  "disabled": false,
+                  "description": {
+                    "content": "Page to list",
+                    "type": "text/plain"
+                  },
+                  "key": "page",
+                  "value": "1"
+                }
+              ],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"payout_accounts\": [\n    {\n      \"id\": \"<uuid>\",\n      \"account_type\": \"wallet\",\n      \"currency\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n      },\n      \"properties\": {},\n      \"created_at\": \"<string>\"\n    },\n    {\n      \"id\": \"<uuid>\",\n      \"account_type\": \"wallet\",\n      \"currency\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n      },\n      \"properties\": {},\n      \"created_at\": \"<string>\"\n    }\n  ],\n  \"meta\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/ListMeta not found in the OpenAPI spec\"\n  }\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "502d30b5-35bb-4194-b52b-832108410d22",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts"],
+              "host": ["{{baseUrl}}"],
+              "query": [
+                {
+                  "disabled": false,
+                  "description": {
+                    "content": "Page to list",
+                    "type": "text/plain"
+                  },
+                  "key": "page",
+                  "value": "1"
+                }
+              ],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthenticationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "5d95e92d-044c-4552-a946-f35646f80a64",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts"],
+              "host": ["{{baseUrl}}"],
+              "query": [
+                {
+                  "disabled": false,
+                  "description": {
+                    "content": "Page to list",
+                    "type": "text/plain"
+                  },
+                  "key": "page",
+                  "value": "1"
+                }
+              ],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthorizationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        }
+      ],
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "id": "05448e97-eb0e-4de2-a500-aa0a947c7fa2",
+      "name": "Fetch Payout Account",
+      "request": {
+        "name": "Fetch Payout Account",
+        "description": {},
+        "url": {
+          "path": ["payout_accounts", ":id"],
+          "host": ["{{baseUrl}}"],
+          "query": [],
+          "variable": [
+            {
+              "type": "any",
+              "value": "<uuid>",
+              "key": "id",
+              "disabled": false,
+              "description": {
+                "content": "(Required) ID of the payout account to fetch",
+                "type": "text/plain"
+              }
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "GET",
+        "body": {},
+        "auth": null
+      },
+      "response": [
+        {
+          "id": "26d0ead3-5bee-41b6-9feb-c55d0d0791d6",
+          "name": "Successful operation",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"<uuid>\",\n  \"account_type\": \"wallet\",\n  \"currency\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n  },\n  \"properties\": {},\n  \"created_at\": \"<string>\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "88d36f05-e383-48bd-91f0-ceba16a9af89",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthenticationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "175568af-4307-4df5-a515-419b691b2d23",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthorizationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "2d07b3dc-8402-4d77-91fd-a9a11d0c338e",
+          "name": "One of the record referenced in the request was not found",
+          "originalRequest": {
+            "url": {
+              "path": ["payout_accounts", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Not Found",
+          "code": 404,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiNotFoundError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        }
+      ],
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "id": "a7666a69-1d82-4c36-bf64-a54d2b3e07e1",
+      "name": "Create Payout",
+      "request": {
+        "name": "Create Payout",
+        "description": {},
+        "url": {
+          "path": ["payouts"],
+          "host": ["{{baseUrl}}"],
+          "query": [],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "POST",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"amount\": \"<integer>\",\n  \"purpose\": \"donation\",\n  \"destination\": {\n    \"type\": \"<string>\",\n    \"iban\": \"<string>\",\n    \"name\": \"<string>\",\n    \"mobile\": \"<string>\",\n    \"country\": \"<string>\",\n    \"city\": \"<string>\"\n  },\n  \"sequence_number\": \"<string>\",\n  \"comment\": \"<string>\",\n  \"metadata\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n  }\n}",
+          "options": {
+            "raw": {
+              "headerFamily": "json",
+              "language": "json"
+            }
+          }
+        },
+        "auth": null
+      },
+      "response": [
+        {
+          "id": "6f026604-a7ee-4d83-9097-743aa1a13975",
+          "name": "Successful operation",
+          "originalRequest": {
+            "url": {
+              "path": ["payouts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"amount\": \"<integer>\",\n  \"purpose\": \"donation\",\n  \"destination\": {\n    \"type\": \"<string>\",\n    \"iban\": \"<string>\",\n    \"name\": \"<string>\",\n    \"mobile\": \"<string>\",\n    \"country\": \"<string>\",\n    \"city\": \"<string>\"\n  },\n  \"sequence_number\": \"<string>\",\n  \"comment\": \"<string>\",\n  \"metadata\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"<uuid>\",\n  \"source_id\": \"<uuid>\",\n  \"sequence_number\": \"<string>\",\n  \"channel\": \"internal\",\n  \"status\": \"initiated\",\n  \"amount\": \"<integer>\",\n  \"currency\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n  },\n  \"purpose\": \"payment_to_merchant\",\n  \"comment\": \"<string>\",\n  \"destination\": {\n    \"type\": \"<string>\",\n    \"iban\": \"<string>\",\n    \"name\": \"<string>\",\n    \"mobile\": \"<string>\",\n    \"country\": \"<string>\",\n    \"city\": \"<string>\"\n  },\n  \"message\": \"<string>\",\n  \"failure_reason\": \"<string>\",\n  \"created_at\": \"<string>\",\n  \"updated_at\": \"<string>\",\n  \"metadata\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n  }\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "56f50b24-89dc-4047-be50-f279fc1577f1",
+          "name": "Business Error or validation error.",
+          "originalRequest": {
+            "url": {
+              "path": ["payouts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"amount\": \"<integer>\",\n  \"purpose\": \"donation\",\n  \"destination\": {\n    \"type\": \"<string>\",\n    \"iban\": \"<string>\",\n    \"name\": \"<string>\",\n    \"mobile\": \"<string>\",\n    \"country\": \"<string>\",\n    \"city\": \"<string>\"\n  },\n  \"sequence_number\": \"<string>\",\n  \"comment\": \"<string>\",\n  \"metadata\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiBusinessError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "a8c4abfb-6c75-4b55-bdc6-facdb5702a93",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payouts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"amount\": \"<integer>\",\n  \"purpose\": \"donation\",\n  \"destination\": {\n    \"type\": \"<string>\",\n    \"iban\": \"<string>\",\n    \"name\": \"<string>\",\n    \"mobile\": \"<string>\",\n    \"country\": \"<string>\",\n    \"city\": \"<string>\"\n  },\n  \"sequence_number\": \"<string>\",\n  \"comment\": \"<string>\",\n  \"metadata\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthenticationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "d6a904de-cad9-4f27-9a26-e20ba53204a9",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payouts"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"amount\": \"<integer>\",\n  \"purpose\": \"donation\",\n  \"destination\": {\n    \"type\": \"<string>\",\n    \"iban\": \"<string>\",\n    \"name\": \"<string>\",\n    \"mobile\": \"<string>\",\n    \"country\": \"<string>\",\n    \"city\": \"<string>\"\n  },\n  \"sequence_number\": \"<string>\",\n  \"comment\": \"<string>\",\n  \"metadata\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthorizationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        }
+      ],
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "id": "c3ba30b6-21e1-46c2-a00d-28c993fb04e4",
+      "name": "List Payouts",
+      "request": {
+        "name": "List Payouts",
+        "description": {},
+        "url": {
+          "path": ["payouts"],
+          "host": ["{{baseUrl}}"],
+          "query": [
+            {
+              "disabled": false,
+              "description": {
+                "content": "Page to list",
+                "type": "text/plain"
+              },
+              "key": "page",
+              "value": "1"
+            }
+          ],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "GET",
+        "body": {},
+        "auth": null
+      },
+      "response": [
+        {
+          "id": "12652634-e1d9-4490-aa5e-d43ea8bbc0be",
+          "name": "Successful operation",
+          "originalRequest": {
+            "url": {
+              "path": ["payouts"],
+              "host": ["{{baseUrl}}"],
+              "query": [
+                {
+                  "disabled": false,
+                  "description": {
+                    "content": "Page to list",
+                    "type": "text/plain"
+                  },
+                  "key": "page",
+                  "value": "1"
+                }
+              ],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"payouts\": [\n    {\n      \"source_id\": \"<uuid>\",\n      \"amount\": \"<integer>\",\n      \"purpose\": \"government_dues\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    },\n    {\n      \"source_id\": \"<uuid>\",\n      \"amount\": \"<integer>\",\n      \"purpose\": \"donation\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    }\n  ],\n  \"meta\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/ListMeta not found in the OpenAPI spec\"\n  }\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "92bdfbee-f563-4ba8-8d3f-e4e0816cd57c",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payouts"],
+              "host": ["{{baseUrl}}"],
+              "query": [
+                {
+                  "disabled": false,
+                  "description": {
+                    "content": "Page to list",
+                    "type": "text/plain"
+                  },
+                  "key": "page",
+                  "value": "1"
+                }
+              ],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthenticationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "68983deb-2ec1-427a-9910-ed6e629ee201",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payouts"],
+              "host": ["{{baseUrl}}"],
+              "query": [
+                {
+                  "disabled": false,
+                  "description": {
+                    "content": "Page to list",
+                    "type": "text/plain"
+                  },
+                  "key": "page",
+                  "value": "1"
+                }
+              ],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthorizationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        }
+      ],
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "id": "f549ee2c-bdea-42f4-a76d-754e878e54d8",
+      "name": "Fetch Payout",
+      "request": {
+        "name": "Fetch Payout",
+        "description": {},
+        "url": {
+          "path": ["payout", ":id"],
+          "host": ["{{baseUrl}}"],
+          "query": [],
+          "variable": [
+            {
+              "type": "any",
+              "value": "<uuid>",
+              "key": "id",
+              "disabled": false,
+              "description": {
+                "content": "(Required) ID of the payout account to fetch",
+                "type": "text/plain"
+              }
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "GET",
+        "body": {},
+        "auth": null
+      },
+      "response": [
+        {
+          "id": "9e0a888d-6cbc-4140-a9ef-5e6136a47389",
+          "name": "Successful operation",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "OK",
+          "code": 200,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"id\": \"<uuid>\",\n  \"source_id\": \"<uuid>\",\n  \"sequence_number\": \"<string>\",\n  \"channel\": \"internal\",\n  \"status\": \"initiated\",\n  \"amount\": \"<integer>\",\n  \"currency\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n  },\n  \"purpose\": \"payment_to_merchant\",\n  \"comment\": \"<string>\",\n  \"destination\": {\n    \"type\": \"<string>\",\n    \"iban\": \"<string>\",\n    \"name\": \"<string>\",\n    \"mobile\": \"<string>\",\n    \"country\": \"<string>\",\n    \"city\": \"<string>\"\n  },\n  \"message\": \"<string>\",\n  \"failure_reason\": \"<string>\",\n  \"created_at\": \"<string>\",\n  \"updated_at\": \"<string>\",\n  \"metadata\": {\n    \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n  }\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "e365eae6-2c03-4496-92e7-378c8ffdc314",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthenticationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "caf6e9c8-1e23-41dc-b429-ccb92cce8269",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthorizationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "cb837a6c-e7af-4ef5-a3a6-5685c10103e7",
+          "name": "One of the record referenced in the request was not found",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", ":id"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "GET",
+            "body": {}
+          },
+          "status": "Not Found",
+          "code": 404,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiNotFoundError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        }
+      ],
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "id": "5be83dfb-f92f-4a1f-81dc-f88f7dc79121",
+      "name": "Create Bulk Payout",
+      "request": {
+        "name": "Create Bulk Payout",
+        "description": {},
+        "url": {
+          "path": ["payout", "bulk"],
+          "host": ["{{baseUrl}}"],
+          "query": [],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "POST",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"payouts\": [\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"credit_card_loan\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    },\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"government_dues\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "headerFamily": "json",
+              "language": "json"
+            }
+          }
+        },
+        "auth": null
+      },
+      "response": [
+        {
+          "id": "54e54b5c-1136-498d-bd27-3f49ccf78f81",
+          "name": "Successful operation",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", "bulk"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"payouts\": [\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"credit_card_loan\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    },\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"government_dues\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Created",
+          "code": 201,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"payouts\": [\n    {\n      \"id\": \"<uuid>\",\n      \"source_id\": \"<uuid>\",\n      \"sequence_number\": \"<string>\",\n      \"channel\": \"sarie\",\n      \"status\": \"initiated\",\n      \"amount\": \"<integer>\",\n      \"currency\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n      },\n      \"purpose\": \"gift_or_reward\",\n      \"comment\": \"<string>\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"message\": \"<string>\",\n      \"failure_reason\": \"<string>\",\n      \"created_at\": \"<string>\",\n      \"updated_at\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    },\n    {\n      \"id\": \"<uuid>\",\n      \"source_id\": \"<uuid>\",\n      \"sequence_number\": \"<string>\",\n      \"channel\": \"sarie\",\n      \"status\": \"queued\",\n      \"amount\": \"<integer>\",\n      \"currency\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Currency not found in the OpenAPI spec\"\n      },\n      \"purpose\": \"government_payment\",\n      \"comment\": \"<string>\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"message\": \"<string>\",\n      \"failure_reason\": \"<string>\",\n      \"created_at\": \"<string>\",\n      \"updated_at\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    }\n  ]\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "7417a31f-d523-410d-8d11-f028e21b013a",
+          "name": "Business Error or validation error.",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", "bulk"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"payouts\": [\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"credit_card_loan\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    },\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"government_dues\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiBusinessError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "9518b3b6-0d71-4a88-9281-96068e8f8288",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", "bulk"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"payouts\": [\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"credit_card_loan\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    },\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"government_dues\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthenticationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        },
+        {
+          "id": "c664d2a8-4c93-4ce7-943b-c0d84086e62b",
+          "name": "Invalid authorization credentials",
+          "originalRequest": {
+            "url": {
+              "path": ["payout", "bulk"],
+              "host": ["{{baseUrl}}"],
+              "query": [],
+              "variable": []
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_id\": \"<uuid>\",\n  \"payouts\": [\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"credit_card_loan\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    },\n    {\n      \"amount\": \"<integer>\",\n      \"purpose\": \"government_dues\",\n      \"destination\": {\n        \"type\": \"<string>\",\n        \"iban\": \"<string>\",\n        \"name\": \"<string>\",\n        \"mobile\": \"<string>\",\n        \"country\": \"<string>\",\n        \"city\": \"<string>\"\n      },\n      \"sequence_number\": \"<string>\",\n      \"comment\": \"<string>\",\n      \"metadata\": {\n        \"value\": \"reference ./common/types.yaml#/components/schemas/Metadata not found in the OpenAPI spec\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "headerFamily": "json",
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "status": "Forbidden",
+          "code": 403,
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "body": "{\n  \"value\": \"reference ./common/types.yaml#/components/schemas/ApiAuthorizationError not found in the OpenAPI spec\"\n}",
+          "cookie": [],
+          "_postman_previewlanguage": "json"
+        }
+      ],
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    }
+  ],
+  "event": [],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://api.moyasar.com/v1"
+    }
+  ],
+  "info": {
+    "_postman_id": "f1661f10-a9b2-4f16-a694-8c7d4757fc28",
+    "name": "Moyasar Payout API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": {
+      "content": "",
+      "type": "text/plain"
+    }
+  }
+}

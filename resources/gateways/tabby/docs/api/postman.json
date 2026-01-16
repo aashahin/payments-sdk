@@ -1,0 +1,528 @@
+{
+  "info": {
+    "_postman_id": "cbea8aab-4953-40f0-b4b7-120e6b2bc047",
+    "name": "Tabby Pay in 4 collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "20717740"
+  },
+  "item": [
+    {
+      "name": "Create a Session",
+      "item": [
+        {
+          "name": "Checkout",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "followOriginalHttpMethod": false,
+            "followAuthorizationHeader": false
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"payment\": {\n        \"amount\": \"100\", \n        \"currency\": \"{{currency}}\", \n        \"description\": \"string\",\n        \"buyer\": {\n            \"phone\": \"500000001\", \n            \"email\": \"otp.success@tabby.ai\", \n            \"name\": \"string\", \n            \"dob\": \"2019-08-24\" \n        },\n        \"buyer_history\": {\n            \"registered_since\": \"2019-08-24T14:15:22Z\", \n            \"loyalty_level\": 0,\n            \"wishlist_count\": 0, \n            \"is_social_networks_connected\": true,\n            \"is_phone_number_verified\": true, \n            \"is_email_verified\": true \n        },\n        \"order\": {\n            \"tax_amount\": \"0.00\",\n            \"shipping_amount\": \"0.00\",\n            \"discount_amount\": \"0.00\",\n            \"updated_at\": \"2019-08-24T14:15:22Z\",\n            \"reference_id\": \"string\", \n            \"items\": [\n                {\n                    \"title\": \"string\", \n                    \"description\": \"string\", \n                    \"quantity\": 1, \n                    \"unit_price\": \"0.00\", \n                    \"discount_amount\": \"0.00\",\n                    \"reference_id\": \"string\",\n                    \"image_url\": \"http://example.com\",\n                    \"product_url\": \"http://example.com\",\n                    \"gender\": \"Male\",\n                    \"category\": \"string\",  \n                    \"color\": \"string\",\n                    \"product_material\": \"string\",\n                    \"size_type\": \"string\",\n                    \"size\": \"string\",\n                    \"brand\": \"string\"\n                }\n            ]\n        },\n        \"order_history\": [\n            {\n                \"purchased_at\": \"2019-08-24T14:15:22Z\", \n                \"amount\": \"0.00\", \n                \"payment_method\": \"card\", \n                \"status\": \"new\",\n                \"buyer\": { \n                    \"phone\": \"string\", \n                    \"email\": \"user@example.com\", \n                    \"name\": \"string\", \n                    \"dob\": \"2019-08-24\" \n                },\n                \"shipping_address\": {\n                    \"city\": \"string\", \n                    \"address\": \"string\", \n                    \"zip\": \"string\" \n                },\n                \"items\": [\n                    {\n                        \"title\": \"string\",\n                        \"description\": \"string\",\n                        \"quantity\": 1,\n                        \"unit_price\": \"0.00\",\n                        \"discount_amount\": \"0.00\",\n                        \"reference_id\": \"string\",\n                        \"image_url\": \"http://example.com\",\n                        \"product_url\": \"http://example.com\",\n                        \"ordered\": 0,\n                        \"captured\": 0,\n                        \"shipped\": 0,\n                        \"refunded\": 0,\n                        \"gender\": \"Male\",\n                        \"category\": \"string\",\n                        \"color\": \"string\",\n                        \"product_material\": \"string\",\n                        \"size_type\": \"string\",\n                        \"size\": \"string\",\n                        \"brand\": \"string\"\n                    }\n                ]\n            }\n        ],\n        \"shipping_address\": {\n            \"city\": \"string\", \n            \"address\": \"string\", \n            \"zip\": \"string\" \n        },\n        \"meta\": {\n            \"order_id\": \"#1234\", \n            \"customer\": \"#customer-id\" \n        },\n        \"attachment\": {\n            \"body\": \"{\\\"flight_reservation_details\\\": {\\\"pnr\\\": \\\"TR9088999\\\",\\\"itinerary\\\": [...],\\\"insurance\\\": [...],\\\"passengers\\\": [...],\\\"affiliate_name\\\": \\\"some affiliate\\\"}}\",\n            \"content_type\": \"application/vnd.tabby.v1+json\"\n        }\n    },\n    \"lang\": \"en\", \n    \"merchant_code\": \"{{merchant_code}}\", \n    \"merchant_urls\": {\n        \"success\": \"https://your-store/success\",\n        \"cancel\": \"https://your-store/cancel\",\n        \"failure\": \"https://your-store/failure\"\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://api.tabby.ai/api/v2/checkout",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v2",
+                "checkout"
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              ""
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var jsonData = JSON.parse(responseBody);",
+              "pm.collectionVariables.set(\"payment_id\", jsonData.payment.id);",
+              "",
+              "var jsonData = JSON.parse(responseBody);",
+              "pm.collectionVariables.set(\"session_id\", jsonData.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payments",
+      "item": [
+        {
+          "name": "Retrieve a payment",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "followOriginalHttpMethod": false,
+            "followAuthorizationHeader": false
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}"
+              }
+            ],
+            "url": {
+              "raw": "https://api.tabby.ai/api/v2/payments/{{payment_id}}",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v2",
+                "payments",
+                "{{payment_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Payment",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "followOriginalHttpMethod": false,
+            "followAuthorizationHeader": false
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"order\": {\n        \"reference_id\": \"Your order number\"\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://api.tabby.ai/api/v2/payments/{{payment_id}}",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v2",
+                "payments",
+                "{{payment_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Capture a payment",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "followOriginalHttpMethod": false,
+            "followAuthorizationHeader": false
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"amount\": \"100.00\",\n    \"reference_id\":\"idempotency_key_1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://api.tabby.ai/api/v2/payments/{{payment_id}}/captures",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v2",
+                "payments",
+                "{{payment_id}}",
+                "captures"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Refund a payment",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "followOriginalHttpMethod": false,
+            "followAuthorizationHeader": false
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"amount\": \"100\",\n    \"reference_id\":\"idempotency_key_1\"\n}"
+            },
+            "url": {
+              "raw": "https://api.tabby.ai/api/v2/payments/{{payment_id}}/refunds",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v2",
+                "payments",
+                "{{payment_id}}",
+                "refunds"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List of all payments",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "https://api.tabby.ai/api/v2/payments?created_at__gte=2025-03-01&created_at__lte=2025-03-01&limit=20&offset=0",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v2",
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "created_at__gte",
+                  "value": "2025-03-01"
+                },
+                {
+                  "key": "created_at__lte",
+                  "value": "2025-03-01"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "Register a webhook",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Merchant-Code",
+                "value": "{{merchant_code}}",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"url\": \"http://example.com\",\n    \"header\": {\n        \"title\": \"string\",\n        \"value\": \"string\"\n    }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://api.tabby.ai/api/v1/webhooks",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "webhooks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Retrieve all webhooks",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Merchant-Code",
+                "value": "{{merchant_code}}",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "https://api.tabby.ai/api/v1/webhooks",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "webhooks"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Retrieve a webhook",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Merchant-Code",
+                "value": "{{merchant_code}}",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "https://api.tabby.ai/api/v1/webhooks/{{webhook_id}}",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "webhooks",
+                "{{webhook_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update a webhook",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Merchant-Code",
+                "value": "{{merchant_code}}",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"url\": \"string\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "https://api.tabby.ai/api/v1/webhooks/{{webhook_id}}",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "webhooks",
+                "{{webhook_id}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Remove a webhook",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Merchant-Code",
+                "value": "{{merchant_code}}",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{secret_key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "https://api.tabby.ai/api/v1/webhooks/{{webhook_id}}",
+              "protocol": "https",
+              "host": [
+                "api",
+                "tabby",
+                "ai"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "webhooks",
+                "{{webhook_id}}"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "payment_id",
+      "value": ""
+    },
+    {
+      "key": "secret_key",
+      "value": "sk_test_000000000"
+    },
+    {
+      "key": "merchant_code",
+      "value": "ae"
+    },
+    {
+      "key": "webhook_id",
+      "value": "{id}"
+    },
+    {
+      "key": "currency",
+      "value": "AED",
+      "type": "string"
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    }
+  ]
+}

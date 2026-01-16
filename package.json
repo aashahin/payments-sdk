@@ -1,0 +1,54 @@
+{
+  "name": "@abshahin/payments-sdk",
+  "version": "0.6.0",
+  "description": "Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integrate Moyasar, PayPal, Paymob and other payment gateways with type-safe lifecycle hooks and normalized webhooks.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun && bun run build:types",
+    "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {},
+  "keywords": [
+    "payment",
+    "gateway",
+    "moyasar",
+    "paypal",
+    "paymob",
+    "multi-gateway",
+    "typescript"
+  ],
+  "author": "Abdelrahman Shaheen",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aashahin/payments-sdk.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/aashahin/payments-sdk#readme",
+  "dependencies": {
+    "jose": "^6.1.3",
+    "zod": "3"
+  }
+}
