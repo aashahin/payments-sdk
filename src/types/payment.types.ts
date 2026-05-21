@@ -19,7 +19,9 @@ export type PaymentStatus =
     | "failed"
     | "cancelled"
     | "refunded"
-    | "partially_refunded";
+    | "partially_refunded"
+    | "refund_completed"
+    | "setup_completed";
 
 /**
  * Refund processing status
@@ -107,6 +109,10 @@ export interface CaptureParams {
     gatewayPaymentId: string;
     /** Amount to capture (optional, defaults to full amount) */
     amount?: number;
+    /** ISO 4217 currency code (required for Stripe zero-decimal partial captures) */
+    currency?: string;
+    /** Idempotency key for safe retries */
+    idempotencyKey?: string;
 }
 
 /**
@@ -121,6 +127,8 @@ export interface RefundParams {
     reason?: string;
     /** ISO 4217 currency code (required for PayPal partial refunds) */
     currency?: string;
+    /** Idempotency key for safe retries */
+    idempotencyKey?: string;
 }
 
 /**
@@ -129,6 +137,8 @@ export interface RefundParams {
 export interface VoidParams {
     /** Gateway's payment ID to void */
     gatewayPaymentId: string;
+    /** Idempotency key for safe retries */
+    idempotencyKey?: string;
 }
 
 /**
@@ -159,6 +169,10 @@ export interface GatewayPaymentResult {
     capturedAmount?: number | undefined;
     /** Amount refunded so far (for partial refunds) in base currency units */
     refundedAmount?: number | undefined;
+    /** Client secret for frontend confirmation flows (Stripe PaymentIntents) */
+    clientSecret?: string | undefined;
+    /** Gateway-specific next action payload for customer authentication or redirects */
+    nextAction?: unknown;
     /** Raw response from the gateway API */
     rawResponse: unknown;
 }

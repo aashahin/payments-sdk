@@ -6,12 +6,15 @@ import type {
   CreatePaymentParams,
   CaptureParams,
   RefundParams,
+  VoidParams,
   GetPaymentParams,
   GatewayPaymentResult,
   GatewayRefundResult,
+  PaymentStatus,
 } from "./types/payment.types";
 import type { WebhookEvent } from "./types/webhook.types";
 import type { PaymentClientConfig } from "./types/config.types";
+import type { StripeCreatePaymentParams } from "./types/validation";
 import type { PaymentHooks } from "./hooks/hooks.types";
 import { HooksManager } from "./hooks/hooks.manager";
 import { MoyasarGateway } from "./gateways/moyasar/moyasar.gateway";
@@ -107,6 +110,8 @@ export class PaymentClient {
    * Get a specific gateway instance
    * @throws {GatewayNotConfiguredError} If gateway is not configured
    */
+  gateway(name: "stripe"): StripeGateway;
+  gateway(name: GatewayName): PaymentGateway;
   gateway(name: GatewayName): PaymentGateway {
     const gw = this.gateways.get(name);
     if (!gw) {
@@ -136,12 +141,15 @@ export class PaymentClient {
   /**
    * Create a payment using the specified or default gateway
    */
+  async createPayment(params: StripeCreatePaymentParams): Promise<GatewayPaymentResult>;
+  async createPayment(params: StripeCreatePaymentParams, gateway: "stripe"): Promise<GatewayPaymentResult>;
+  async createPayment(params: CreatePaymentParams, gateway?: GatewayName): Promise<GatewayPaymentResult>;
   async createPayment(
-    params: CreatePaymentParams,
+    params: CreatePaymentParams | StripeCreatePaymentParams,
     gateway?: GatewayName,
   ): Promise<GatewayPaymentResult> {
     const gw = this.resolveGateway(gateway);
-    return gw.createPayment(params);
+    return gw.createPayment(params as CreatePaymentParams);
   }
 
   /**
@@ -167,6 +175,22 @@ export class PaymentClient {
   }
 
   /**
+   * Void/cancel an authorized payment before capture
+   */
+  async voidPayment(
+    params: VoidParams,
+    gateway?: GatewayName,
+  ): Promise<GatewayPaymentResult> {
+    const gw = this.resolveGateway(gateway);
+    if (!gw.voidPayment) {
+      throw new GatewayNotConfiguredError(
+        `${gw.name} does not support voidPayment`
+      );
+    }
+    return gw.voidPayment(params);
+  }
+
+  /**
    * Retrieve payment details from a gateway
    * @throws {GatewayNotConfiguredError} If gateway doesn't support getPayment
    */
@@ -181,6 +205,22 @@ export class PaymentClient {
       );
     }
     return gw.getPayment(params);
+  }
+
+  /**
+   * Get current status of a payment from a gateway
+   */
+  async getPaymentStatus(
+    gatewayId: string,
+    gateway?: GatewayName,
+  ): Promise<PaymentStatus> {
+    const gw = this.resolveGateway(gateway);
+    if (!gw.getPaymentStatus) {
+      throw new GatewayNotConfiguredError(
+        `${gw.name} does not support getPaymentStatus`
+      );
+    }
+    return gw.getPaymentStatus(gatewayId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

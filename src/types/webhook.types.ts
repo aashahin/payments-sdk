@@ -16,6 +16,8 @@ export interface WebhookEvent {
     paymentId: string | undefined;
     /** Gateway's payment ID */
     gatewayPaymentId: string;
+    /** Gateway object ID that emitted the event when different from the payment ID */
+    gatewayObjectId?: string | undefined;
     /** Normalized payment status */
     status: PaymentStatus;
     /** Amount in base currency units */
@@ -212,13 +214,15 @@ export interface StripeWebhookPayload {
             object: string;
             status: string;
             amount?: number;
+            /** Total refunded amount in smallest currency unit (for charge.refunded) */
+            amount_refunded?: number;
             /** Amount total in smallest currency unit (for checkout sessions) */
             amount_total?: number;
             currency?: string;
             /** Payment status (for checkout sessions: 'paid' | 'unpaid' | 'no_payment_required') */
             payment_status?: string;
             metadata?: Record<string, string>;
-            payment_intent?: string;
+            payment_intent?: string | { id: string } | null;
             latest_charge?: string;
         };
     };
@@ -309,4 +313,3 @@ export interface TamaraWebhookPayload {
     }
     | [];
 }
-

@@ -113,30 +113,23 @@ await client.createPayment({ ... });
 // Specify gateway explicitly
 await client.createPayment({ ... }, 'paypal');
 
-// Access gateway directly
-const moyasar = client.gateway('moyasar');
-// Access gateway directly
-const moyasar = client.gateway('moyasar');
-await moyasar.getPaymentStatus('pay_xxx');
-
 // Stripe Checkout Example
 const stripe = client.gateway('stripe');
 const session = await stripe.createCheckoutSession({
-  amount: 200, // $200.00
-  currency: 'USD',
   successUrl: 'https://example.com/success',
   cancelUrl: 'https://example.com/cancel',
   mode: 'payment',
+  metadata: { paymentId: 'order_123' },
   lineItems: [
     {
-       priceData: {
-         currency: 'USD',
-         productData: {
-           name: 'T-Shirt',
-         },
-         unitAmount: 2000, // 2000 cents = $20.00
-       },
-       quantity: 10,
+      priceData: {
+        currency: 'USD',
+        productData: {
+          name: 'T-Shirt',
+        },
+        amount: 20,
+      },
+      quantity: 10,
     }
   ]
 });
@@ -144,11 +137,13 @@ const session = await stripe.createCheckoutSession({
 
 ## Stripe Webhook Note
 
-For Stripe webhooks, you **MUST** pass the raw request body to `verifyWebhook`. If your framework parses JSON automatically, you need to access the raw body buffer or string before parsing.
+For Stripe webhooks, you **MUST** pass the raw request body to `verifyWebhook`. If your framework parses JSON automatically, you need to access the raw body buffer or string before parsing; Buffer payloads are verified using their original bytes.
+Stripe webhook verification fails closed when `webhookSecret` is not configured.
+Stripe webhook parsing expects snapshot events with `data.object`; hydrate thin events before passing them to `parseWebhookEvent`. Checkout, invoice, and subscription webhooks normalize `gatewayPaymentId` to the related PaymentIntent, SetupIntent, or Subscription when Stripe includes one.
 
 ```typescript
 // Example using Elysia
-app.post('/webhook/stripe', async ({ request, body }) => {
+app.post('/webhook/stripe', async ({ request }) => {
     const signature = request.headers.get('stripe-signature');
     const rawBody = await Bun.readableStreamToText(request.body); // Get raw body
     
@@ -169,6 +164,9 @@ import {
   GatewayNotConfiguredError,
   InvalidWebhookError,
   GatewayApiError,
+  CardDeclinedError,
+  InsufficientFundsError,
+  RateLimitError,
 } from '@abshahin/payments-sdk';
 
 try {

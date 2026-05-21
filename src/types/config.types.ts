@@ -77,8 +77,10 @@ export interface StripeConfig {
     publishableKey?: string;
     /** Webhook signing secret */
     webhookSecret?: string;
-    /** API version (optional, defaults to latest) */
+    /** API version (optional, defaults to the SDK's pinned Stripe API version) */
     apiVersion?: string;
+    /** Request timeout in milliseconds. Default: 30000 */
+    timeoutMs?: number;
 }
 
 /**

@@ -20,6 +20,7 @@ export type OperationType =
     | 'refundPayment'
     | 'voidPayment'
     | 'verifyWebhook'
+    | 'getPayment'
     | 'createCheckoutSession';
 
 /**

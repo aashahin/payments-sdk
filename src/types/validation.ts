@@ -12,11 +12,14 @@ export const PaymentStatusSchema = z.enum([
     "pending",
     "processing",
     "authorized",
+    "approved",
     "paid",
     "failed",
     "cancelled",
     "refunded",
-    "partially_refunded"
+    "partially_refunded",
+    "refund_completed",
+    "setup_completed"
 ]);
 
 export const RefundStatusSchema = z.enum(["pending", "completed", "failed"]);
@@ -113,9 +116,18 @@ export const CreatePaymentParamsSchema = z.object({
 /** Inferred type from CreatePaymentParamsSchema */
 export type ValidatedCreatePaymentParams = z.infer<typeof CreatePaymentParamsSchema>;
 
+export const StripeCreatePaymentParamsSchema = CreatePaymentParamsSchema.extend({
+    callbackUrl: z.string().url("Callback URL must be a valid URL").optional(),
+});
+
+/** Input type for Stripe PaymentIntent creation. Unconfirmed Stripe Elements flows do not need callbackUrl. */
+export type StripeCreatePaymentParams = z.input<typeof StripeCreatePaymentParamsSchema>;
+
 export const CaptureParamsSchema = z.object({
     gatewayPaymentId: z.string().min(1),
     amount: z.number().positive().optional(),
+    currency: z.string().length(3).optional(),
+    idempotencyKey: z.string().optional(),
 }).passthrough();
 
 /** Inferred type from CaptureParamsSchema */
@@ -126,6 +138,7 @@ export const RefundParamsSchema = z.object({
     amount: z.number().positive().optional(),
     reason: z.string().optional(),
     currency: z.string().length(3).optional(),
+    idempotencyKey: z.string().optional(),
 }).passthrough();
 
 /** Inferred type from RefundParamsSchema */
@@ -133,6 +146,7 @@ export type ValidatedRefundParams = z.infer<typeof RefundParamsSchema>;
 
 export const VoidParamsSchema = z.object({
     gatewayPaymentId: z.string().min(1),
+    idempotencyKey: z.string().optional(),
 }).passthrough();
 
 /** Inferred type from VoidParamsSchema */
@@ -149,30 +163,163 @@ export type ValidatedGetPaymentParams = z.infer<typeof GetPaymentParamsSchema>;
 // Stripe Checkout Session Schemas
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export const CreateCheckoutSessionParamsSchema = z.object({
-    amount: z.number().positive("Amount must be positive"),
-    currency: z.string().length(3, "Currency must be 3-letter ISO code"),
-    successUrl: z.string().url("Success URL must be valid"),
-    cancelUrl: z.string().url("Cancel URL must be valid"),
-    mode: z.enum(['payment', 'subscription', 'setup']).default('payment'),
-    lineItems: z.array(z.object({
-        priceData: z.object({
-            currency: z.string().length(3),
-            productData: z.object({
-                name: z.string().min(1),
-                description: z.string().optional(),
-                images: z.array(z.string().url()).optional(),
-            }),
-            unitAmount: z.number().int().positive(),
+const STRIPE_CHECKOUT_PAYMENT_LINE_ITEM_LIMIT = 100;
+const STRIPE_CHECKOUT_SUBSCRIPTION_TOTAL_LINE_ITEM_LIMIT = 40;
+const STRIPE_CHECKOUT_SUBSCRIPTION_RECURRING_LINE_ITEM_LIMIT = 20;
+
+const StripeCheckoutLineItemSchema = z.object({
+    priceData: z.object({
+        currency: z.string().length(3),
+        productData: z.object({
+            name: z.string().min(1),
+            description: z.string().optional(),
+            images: z.array(z.string().url()).optional(),
+        }),
+        /** Amount in base currency units; converted to Stripe minor units. */
+        amount: z.number().nonnegative().optional(),
+        /** Stripe minor-unit amount. Kept for callers that already store Stripe price data. */
+        unitAmount: z.number().int().nonnegative().optional(),
+        /** Recurring price settings required for inline subscription prices. */
+        recurring: z.object({
+            interval: z.enum(['day', 'week', 'month', 'year']),
+            intervalCount: z.number().int().positive().optional(),
         }).optional(),
-        price: z.string().startsWith('price_').optional(),
-        quantity: z.number().int().positive(),
-    })).optional(),
+    }).superRefine((priceData, ctx) => {
+        const hasAmount = priceData.amount !== undefined;
+        const hasUnitAmount = priceData.unitAmount !== undefined;
+
+        if (hasAmount === hasUnitAmount) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: "Price data must include exactly one of amount or unitAmount",
+                path: ["amount"],
+            });
+        }
+    }).optional(),
+    price: z.string().startsWith('price_').optional(),
+    quantity: z.number().int().positive(),
+}).superRefine((item, ctx) => {
+    const hasPrice = Boolean(item.price);
+    const hasPriceData = Boolean(item.priceData);
+
+    if (hasPrice === hasPriceData) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Line item must include exactly one of price or priceData",
+            path: ["price"],
+        });
+    }
+});
+
+export const CreateCheckoutSessionParamsSchema = z.object({
+    amount: z.number().positive("Amount must be positive").optional(),
+    currency: z.string().length(3, "Currency must be 3-letter ISO code").optional(),
+    successUrl: z.string().url("Success URL must be valid"),
+    cancelUrl: z.string().url("Cancel URL must be valid").optional(),
+    mode: z.enum(['payment', 'subscription', 'setup']).default('payment'),
+    lineItems: z.array(StripeCheckoutLineItemSchema).min(1).optional(),
     customerId: z.string().startsWith('cus_').optional(),
     customerEmail: z.string().email().optional(),
-    metadata: z.record(z.string()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    paymentMethodTypes: z.array(z.string().min(1)).optional(),
     idempotencyKey: z.string().optional(),
-}).passthrough();
+}).strict().superRefine((params, ctx) => {
+    const mode = params.mode ?? 'payment';
+    const hasLineItems = Boolean(params.lineItems?.length);
+    const hasAmount = params.amount !== undefined;
+    const hasCurrency = params.currency !== undefined;
+    const hasSimpleAmount = hasAmount && hasCurrency;
+    const hasPaymentMethodTypes = Boolean(params.paymentMethodTypes?.length);
+
+    if (hasLineItems && (hasAmount || hasCurrency)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Checkout sessions must use either lineItems or amount and currency, not both",
+            path: ["lineItems"],
+        });
+    }
+
+    if (mode === 'payment' && !hasLineItems && !hasSimpleAmount) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Payment mode requires lineItems or amount and currency",
+            path: ["lineItems"],
+        });
+    }
+
+    if ((mode === 'payment' || mode === 'subscription') && (hasAmount !== hasCurrency) && !hasLineItems) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Amount-based Checkout Sessions require both amount and currency",
+            path: hasAmount ? ["currency"] : ["amount"],
+        });
+    }
+
+    if (mode === 'subscription' && !hasLineItems) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Subscription mode requires lineItems",
+            path: ["lineItems"],
+        });
+    }
+
+    if (mode === 'payment' && hasLineItems && params.lineItems!.length > STRIPE_CHECKOUT_PAYMENT_LINE_ITEM_LIMIT) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Payment mode supports at most ${STRIPE_CHECKOUT_PAYMENT_LINE_ITEM_LIMIT} lineItems`,
+            path: ["lineItems"],
+        });
+    }
+
+    if (mode === 'subscription' && hasLineItems) {
+        const lineItems = params.lineItems!;
+        const inlineRecurringCount = lineItems.filter((item) => Boolean(item.priceData?.recurring)).length;
+
+        if (lineItems.length > STRIPE_CHECKOUT_SUBSCRIPTION_TOTAL_LINE_ITEM_LIMIT) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: "Subscription mode supports at most 40 lineItems (20 recurring and 20 one-time)",
+                path: ["lineItems"],
+            });
+        }
+
+        if (inlineRecurringCount > STRIPE_CHECKOUT_SUBSCRIPTION_RECURRING_LINE_ITEM_LIMIT) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Subscription mode supports at most ${STRIPE_CHECKOUT_SUBSCRIPTION_RECURRING_LINE_ITEM_LIMIT} recurring lineItems`,
+                path: ["lineItems"],
+            });
+        }
+    }
+
+    if (mode === 'setup' && (hasLineItems || hasAmount)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Setup mode does not accept lineItems or amount",
+            path: hasLineItems ? ["lineItems"] : ["amount"],
+        });
+    }
+
+    if (mode === 'subscription') {
+        params.lineItems?.forEach((item, index) => {
+            if (item.priceData && !item.priceData.recurring) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: "Subscription mode inline priceData requires recurring settings",
+                    path: ["lineItems", index, "priceData", "recurring"],
+                });
+            }
+        });
+    }
+
+    if (mode === 'setup' && !params.currency && !hasPaymentMethodTypes) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Setup mode requires currency or paymentMethodTypes",
+            path: ["currency"],
+        });
+    }
+});
 
 /** Input type for CreateCheckoutSession (allows optional default values) */
 export type CreateCheckoutSessionParams = z.input<typeof CreateCheckoutSessionParamsSchema>;

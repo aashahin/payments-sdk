@@ -100,6 +100,11 @@ export type {
   GatewayConfig,
 } from "./types/config.types";
 
+export type {
+  StripeCreatePaymentParams,
+  CreateCheckoutSessionParams,
+} from "./types/validation";
+
 // Hooks
 export type {
   PaymentHooks,
@@ -144,6 +149,12 @@ export {
   GatewayNotConfiguredError,
   InvalidWebhookError,
   GatewayApiError,
+  CardDeclinedError,
+  InsufficientFundsError,
+  AuthenticationError,
+  RateLimitError,
+  InvalidRequestError,
+  NetworkError,
 } from "./errors";
 
 // Tabby-specific types

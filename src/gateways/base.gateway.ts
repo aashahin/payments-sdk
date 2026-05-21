@@ -64,6 +64,15 @@ export abstract class BaseGateway implements PaymentGateway {
 
         // Use modified params if provided by hooks
         const finalParams = beforeResult.params ?? params;
+        if (schema) {
+            const result = schema.safeParse(finalParams);
+            if (!result.success) {
+                throw new InvalidRequestError(
+                    `Validation failed for ${operation}`,
+                    result.error.errors
+                );
+            }
+        }
 
         try {
             // Execute the actual gateway operation
