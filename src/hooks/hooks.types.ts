@@ -16,6 +16,7 @@ import type { WebhookEvent } from '../types/webhook.types';
  */
 export type OperationType =
     | 'createPayment'
+    | 'authorizePayment'
     | 'capturePayment'
     | 'refundPayment'
     | 'voidPayment'
@@ -125,6 +126,15 @@ export interface PaymentHooks {
     beforeCreatePayment?: BeforeHook<CreatePaymentParams>;
     /** Called after payment is created */
     afterCreatePayment?: AfterHook<CreatePaymentParams, GatewayPaymentResult>;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Payment authorization hooks
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Called before authorizing an approved payment */
+    beforeAuthorize?: BeforeHook<CaptureParams>;
+    /** Called after payment is authorized */
+    afterAuthorize?: AfterHook<CaptureParams, GatewayPaymentResult>;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Payment capture hooks

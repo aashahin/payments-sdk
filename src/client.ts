@@ -113,6 +113,7 @@ export class PaymentClient {
    */
   gateway(name: "stripe"): StripeGateway;
   gateway(name: "moyasar"): MoyasarGateway;
+  gateway(name: "paypal"): PayPalGateway;
   gateway(name: GatewayName): PaymentGateway;
   gateway(name: GatewayName): PaymentGateway {
     const gw = this.gateways.get(name);
@@ -235,14 +236,16 @@ export class PaymentClient {
    *
    * @param gateway - Which gateway sent the webhook
    * @param payload - Raw webhook payload
-   * @param signature - Optional signature for verification
+   * @param signatureOrHeaders - Optional signature, or headers for gateways like PayPal
+   * @param headers - Optional headers when signature is passed separately
    * @returns Normalized WebhookEvent
    * @throws {InvalidWebhookError} If verification fails
    */
   async handleWebhook(
     gateway: GatewayName,
     payload: unknown,
-    signature?: string,
+    signatureOrHeaders?: string | Record<string, string>,
+    headers?: Record<string, string>,
   ): Promise<WebhookEvent> {
     const gw = this.gateway(gateway);
 
@@ -250,7 +253,15 @@ export class PaymentClient {
     await this.hooksManager.runWebhookReceived(gateway, payload);
 
     // Verify webhook authenticity
-    if (!gw.verifyWebhook(payload, signature)) {
+    const signature =
+      typeof signatureOrHeaders === "string" ? signatureOrHeaders : undefined;
+    const verificationHeaders =
+      typeof signatureOrHeaders === "string" ? headers : signatureOrHeaders;
+    const isVerified = gw.verifyWebhookAsync
+      ? await gw.verifyWebhookAsync(payload, signatureOrHeaders, headers)
+      : gw.verifyWebhook(payload, signature, verificationHeaders);
+
+    if (!isVerified) {
       const error = new InvalidWebhookError("Webhook verification failed");
       await this.hooksManager.runWebhookFailed(payload, error);
       throw error;

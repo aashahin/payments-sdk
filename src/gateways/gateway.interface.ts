@@ -53,7 +53,11 @@ export interface PaymentGateway {
     /**
      * Verify webhook signature/authenticity (synchronous)
      */
-    verifyWebhook(payload: unknown, signature?: string): boolean;
+    verifyWebhook(
+        payload: unknown,
+        signature?: string,
+        headers?: Record<string, string>,
+    ): boolean;
 
     /**
      * Verify webhook signature/authenticity asynchronously.

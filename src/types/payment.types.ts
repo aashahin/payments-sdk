@@ -19,11 +19,15 @@ export type PaymentStatus =
     | "authorized"
     | "approved"
     | "paid"
+    | "partially_captured"
     | "failed"
     | "cancelled"
+    | "reversed"
     | "refunded"
     | "partially_refunded"
     | "refund_completed"
+    | "refund_pending"
+    | "refund_failed"
     | "setup_completed";
 
 /**
@@ -218,6 +222,17 @@ export interface CaptureParams {
     currency?: string;
     /** Idempotency key for safe retries */
     idempotencyKey?: string;
+    /**
+     * PayPal: which capture endpoint to call.
+     * Default 'order' captures an approved CAPTURE-intent order.
+     * Use 'authorization' with an authorization ID returned by PayPalGateway.authorizePayment().
+     */
+    paypalCaptureType?: "order" | "authorization";
+    /**
+     * PayPal authorization captures only: marks whether this is the final capture
+     * for the authorization. Defaults to true.
+     */
+    paypalFinalCapture?: boolean;
 }
 
 /**
@@ -260,8 +275,14 @@ export interface GetPaymentParams {
 export interface GatewayPaymentResult {
     /** Whether the API call succeeded */
     success: boolean;
-    /** Gateway's unique payment ID */
+    /** Gateway's primary payment object ID for this operation */
     gatewayId: string;
+    /** PayPal order ID, when the operation involves a PayPal order */
+    orderId?: string | undefined;
+    /** PayPal capture ID, required for PayPal refunds */
+    captureId?: string | undefined;
+    /** PayPal authorization ID, required for PayPal authorization captures and voids */
+    authorizationId?: string | undefined;
     /** Normalized payment status */
     status: PaymentStatus;
     /** Redirect URL for 3DS/PayPal approval (if applicable) - may be undefined */

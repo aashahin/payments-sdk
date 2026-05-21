@@ -20,10 +20,10 @@ export interface WebhookEvent {
     gatewayObjectId?: string | undefined;
     /** Normalized payment status */
     status: PaymentStatus;
-    /** Amount in base currency units */
-    amount: number;
-    /** Currency code */
-    currency: string;
+    /** Amount in base currency units, when the gateway event includes money details */
+    amount?: number | undefined;
+    /** Currency code, when the gateway event includes money details */
+    currency?: string | undefined;
     /** When the event occurred */
     timestamp: Date;
     /** Original raw payload from gateway */
@@ -90,8 +90,9 @@ export interface PayPalWebhookPayload {
     create_time: string;
     resource_type: string;
     resource: {
-        id: string;
-        status: string;
+        id?: string;
+        order_id?: string;
+        status?: string;
         /** Amount (optional for non-payment events like disputes) */
         amount?: {
             currency_code: string;
@@ -106,10 +107,20 @@ export interface PayPalWebhookPayload {
                 capture_id?: string;
             };
         };
+        /** HATEOAS links, including refund -> capture links for refund webhooks */
+        links?: Array<{
+            href: string;
+            rel: string;
+            method?: string;
+        }>;
         /** Purchase units (for order events) */
         purchase_units?: Array<{
             reference_id?: string;
             custom_id?: string;
+            amount?: {
+                currency_code: string;
+                value: string;
+            };
             payments?: {
                 captures?: Array<{
                     id: string;

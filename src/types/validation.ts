@@ -14,11 +14,15 @@ export const PaymentStatusSchema = z.enum([
     "authorized",
     "approved",
     "paid",
+    "partially_captured",
     "failed",
     "cancelled",
+    "reversed",
     "refunded",
     "partially_refunded",
     "refund_completed",
+    "refund_pending",
+    "refund_failed",
     "setup_completed"
 ]);
 
@@ -239,6 +243,8 @@ export const CaptureParamsSchema = z.object({
     amount: z.number().positive().optional(),
     currency: z.string().length(3).optional(),
     idempotencyKey: z.string().optional(),
+    paypalCaptureType: z.enum(["order", "authorization"]).optional(),
+    paypalFinalCapture: z.boolean().optional(),
 }).passthrough();
 
 /** Inferred type from CaptureParamsSchema */

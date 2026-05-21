@@ -31,6 +31,8 @@ export interface PayPalConfig {
     sandbox?: boolean;
     /** Webhook ID for verification */
     webhookId?: string;
+    /** Request timeout in milliseconds. Default: 30000 */
+    timeoutMs?: number;
 }
 
 /**

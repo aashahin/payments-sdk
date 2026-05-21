@@ -107,8 +107,8 @@ Sample create order request with intent `AUTHORIZE`:
                   "country_code": "US"
               },
               "email_address":"payer@example.com",
-              "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
               "experience_context": {
+                  "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
                   "return_url": "https://example.com/returnUrl",
                   "cancel_url": "https://example.com/cancelUrl"
               }
@@ -190,8 +190,8 @@ Sample create order request with intent `CAPTURE`:
                   "country_code": "US"
               },
               "email_address":"payer@example.com",
-              "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
               "experience_context": {
+                  "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
                   "return_url": "https://example.com/returnUrl",
                   "cancel_url": "https://example.com/cancelUrl"
               }
@@ -299,8 +299,8 @@ curl -v -X POST "https://api-m.sandbox.paypal.com/v2/checkout/orders/"
                 "country_code": "US"
             },
             "email_address":"payer@example.com",
-            "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
             "experience_context": {
+                "payment_method_preference": "IMMEDIATE_PAYMENT_REQUIRED",
                 "return_url": "https://example.com/returnUrl",
                 "cancel_url": "https://example.com/cancelUrl",
                 "shipping_preference": "SET_FROM_PROVIDER"
@@ -640,7 +640,7 @@ Sample capture authorized order request:
 
   ```json lines expandable Response theme={null}
   {
-      "id": "AUTHORIZATION-ID",
+      "id": "CAPTURE-ID",
       "amount": {
           "currency_code": "USD",
           "value": "100.00"

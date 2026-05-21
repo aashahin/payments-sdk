@@ -1,8 +1,8 @@
 import express from "express";
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import {
     ApiError,
-    CheckoutPaymentIntent,
     Client,
     Environment,
     LogLevel,
@@ -35,7 +35,6 @@ const client = new Client({
 });
 
 const ordersController = new OrdersController(client);
-const paymentsController = new PaymentsController(client);
 const vaultController = new VaultController(client);
 
 /**
@@ -45,39 +44,39 @@ const vaultController = new VaultController(client);
 const createVaultSetupToken = async () => {
     const collect = {
         /* Unique identifier for your request to maintain idempotency */
-        paypalRequestId: uuidv4(),
+        paypalRequestId: randomUUID(),
         body: {
             paymentSource: {
                 paypal: {
-                    usage_type: "MERCHANT",
-                    usage_pattern: "SUBSCRIPTION_PREPAID",
-                    billing_plan: {
-                        billing_cycles: [
+                    usageType: "MERCHANT",
+                    usagePattern: "SUBSCRIPTION_PREPAID",
+                    billingPlan: {
+                        billingCycles: [
                             {
-                                tenure_type: "REGULAR",
-                                pricing_scheme: {
-                                    pricing_model: "FIXED",
+                                tenureType: "REGULAR",
+                                pricingScheme: {
+                                    pricingModel: "FIXED",
                                     price: {
                                         value: "100",
-                                        currency_code: "USD",
+                                        currencyCode: "USD",
                                     },
                                 },
                                 frequency: {
-                                    interval_unit: "MONTH",
-                                    interval_count: "1",
+                                    intervalUnit: "MONTH",
+                                    intervalCount: "1",
                                 },
-                                total_cycles: "1",
-                                start_date: "2026-01-10",
+                                totalCycles: "1",
+                                startDate: "2026-01-10",
                             },
                         ],
-                        one_time_charges: {
-                            product_price: {
+                        oneTimeCharges: {
+                            productPrice: {
                                 value: "10",
-                                currency_code: "USD",
+                                currencyCode: "USD",
                             },
-                            total_amount: {
-                                value: 10,
-                                currency_code: "USD",
+                            totalAmount: {
+                                value: "10",
+                                currencyCode: "USD",
                             },
                         },
                         product: {
@@ -86,21 +85,22 @@ const createVaultSetupToken = async () => {
                         },
                         name: "Company",
                     },
-                    experience_context: {
-                        return_url: "https://example.com/returnUrl",
-                        cancel_url: "https://example.com/cancelUrl",
+                    experienceContext: {
+                        returnUrl: "https://example.com/returnUrl",
+                        cancelUrl: "https://example.com/cancelUrl",
                     },
                 },
             },
         },
     };
+
     try {
         const { result, ...httpResponse } =
             await vaultController.setupTokensCreate(collect);
         // Get more response info...
         // const { statusCode, headers } = httpResponse;
         return {
-            jsonResponse: JSON.parse(body),
+            jsonResponse: result,
             httpStatusCode: httpResponse.statusCode,
         };
     } catch (error) {
@@ -128,22 +128,22 @@ app.post("/api/vault", async (req, res) => {
  * @see https://developer.paypal.com/docs/api/payment-tokens/v3/#payment-tokens_create
  */
 const createPaymentToken = async () => {
-    const collect = {
-        /* Unique identifier for your request to maintain idempotency */
-        paypalRequestId: uuidv4(),
+        const collect = {
+            /* Unique identifier for your request to maintain idempotency */
+            paypalRequestId: randomUUID(),
         body: {
             paymentSource: {},
         },
     };
-    try {
-        const { result, ...httpResponse } =
-            await vaultController.paymentTokensCreate(collect);
-        // Get more response info...
-        // const { statusCode, headers } = httpResponse;
-        return {
-            jsonResponse: JSON.parse(body),
-            httpStatusCode: httpResponse.statusCode,
-        };
+        try {
+            const { result, ...httpResponse } =
+                await vaultController.paymentTokensCreate(collect);
+            // Get more response info...
+            // const { statusCode, headers } = httpResponse;
+            return {
+                jsonResponse: result,
+                httpStatusCode: httpResponse.statusCode,
+            };
     } catch (error) {
         if (error instanceof ApiError) {
             // const { statusCode, headers } = error;
@@ -179,13 +179,13 @@ const createOrder = async (cart) => {
                     },
                 },
             ],
-            payment_source: {
+            paymentSource: {
                 paypal: {
-                    vault_id: "PAYMENT-TOKEN-ID",
-                    stored_credential: {
-                        payment_initiator: "MERCHANT",
+                    vaultId: "PAYMENT-TOKEN-ID",
+                    storedCredential: {
+                        paymentInitiator: "MERCHANT",
                         usage: "SUBSEQUENT",
-                        usage_pattern: "RECURRING_POSTPAID",
+                        usagePattern: "RECURRING_POSTPAID",
                     },
                 },
             },

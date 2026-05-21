@@ -52,13 +52,17 @@
 //                         description: `Transaction ${transactionId}`,
 //                         referenceId: transactionId
 //                     }],
-//                     applicationContext: {
-//                         returnUrl: successUrl,
-//                         cancelUrl,
-//                         locale: "ar-SA",
-//                         landingPage: "BILLING" as any,
-//                         shippingPreference: "NO_SHIPPING" as any, // No shipping for digital goods
-//                         userAction: "PAY_NOW" as any // Show "Pay Now" button
+//                     paymentSource: {
+//                         paypal: {
+//                             experienceContext: {
+//                                 returnUrl: successUrl,
+//                                 cancelUrl,
+//                                 locale: "ar-SA",
+//                                 landingPage: "BILLING" as any,
+//                                 shippingPreference: "NO_SHIPPING" as any, // No shipping for digital goods
+//                                 userAction: "PAY_NOW" as any // Show "Pay Now" button
+//                             }
+//                         }
 //                     }
 //                 }
 //             });

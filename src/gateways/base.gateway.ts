@@ -118,6 +118,10 @@ export abstract class BaseGateway implements PaymentGateway {
     abstract createPayment(params: CreatePaymentParams): Promise<GatewayPaymentResult>;
     abstract capturePayment(params: CaptureParams): Promise<GatewayPaymentResult>;
     abstract refundPayment(params: RefundParams): Promise<GatewayRefundResult>;
-    abstract verifyWebhook(payload: unknown, signature?: string): boolean;
+    abstract verifyWebhook(
+        payload: unknown,
+        signature?: string,
+        headers?: Record<string, string>,
+    ): boolean;
     abstract parseWebhookEvent(payload: unknown): WebhookEvent;
 }

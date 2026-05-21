@@ -58,10 +58,14 @@ const client = new PaymentClient({
 | `onError` | When any operation throws | ❌ |
 | `beforeCreatePayment` | Before creating payment | ✅ |
 | `afterCreatePayment` | After payment created | ✅ |
+| `beforeAuthorize` | Before authorizing payment | ✅ |
+| `afterAuthorize` | After payment authorized | ✅ |
 | `beforeCapture` | Before capturing payment | ✅ |
 | `afterCapture` | After payment captured | ✅ |
 | `beforeRefund` | Before refunding | ✅ |
 | `afterRefund` | After refund processed | ✅ |
+| `beforeVoid` | Before voiding payment | ✅ |
+| `afterVoid` | After payment voided | ✅ |
 | `onWebhookReceived` | When webhook payload received | ❌ |
 | `onWebhookVerified` | After webhook verified | ❌ |
 | `onWebhookFailed` | When webhook verification fails | ❌ |

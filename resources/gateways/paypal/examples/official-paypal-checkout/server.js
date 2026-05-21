@@ -7,7 +7,6 @@ import {
     Environment,
     LogLevel,
     OrdersController,
-    PaymentsController,
     PaypalExperienceLandingPage,
     PaypalExperienceUserAction,
     ShippingPreference,
@@ -38,7 +37,6 @@ const client = new Client({
 });
 
 const ordersController = new OrdersController(client);
-const paymentsController = new PaymentsController(client);
 
 
 /**

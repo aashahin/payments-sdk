@@ -146,6 +146,8 @@ export class HooksManager {
         switch (operation) {
             case 'createPayment':
                 return this.hooks.beforeCreatePayment as typeof this.getSpecificBeforeHook<T> extends never ? never : ReturnType<typeof this.getSpecificBeforeHook<T>>;
+            case 'authorizePayment':
+                return this.hooks.beforeAuthorize as ReturnType<typeof this.getSpecificBeforeHook<T>>;
             case 'capturePayment':
                 return this.hooks.beforeCapture as ReturnType<typeof this.getSpecificBeforeHook<T>>;
             case 'refundPayment':
@@ -166,6 +168,8 @@ export class HooksManager {
         switch (operation) {
             case 'createPayment':
                 return this.hooks.afterCreatePayment as ReturnType<typeof this.getSpecificAfterHook<T, R>>;
+            case 'authorizePayment':
+                return this.hooks.afterAuthorize as ReturnType<typeof this.getSpecificAfterHook<T, R>>;
             case 'capturePayment':
                 return this.hooks.afterCapture as ReturnType<typeof this.getSpecificAfterHook<T, R>>;
             case 'refundPayment':
