@@ -84,7 +84,7 @@ export interface ApplePaySource {
  */
 export interface ApplePayDecryptedSource {
     type: "applepay";
-    /** Device Primary Account Number (16-19 digits) */
+    /** Device Primary Account Number (16-19 digits). Sent to Moyasar as `number`. */
     dpan: string;
     /** Expiry month (1-12) */
     month: number;
@@ -94,8 +94,8 @@ export interface ApplePayDecryptedSource {
     cryptogram: string;
     /** Device identifier (8-16 chars) */
     deviceId: string;
-    /** Masked card number (last 4 digits) */
-    maskedNumber?: string;
+    /** Last 4 digits of the device card number. Sent to Moyasar as `last_four`. */
+    lastFour?: string;
     /** Electronic Commerce Indicator (2 digits) */
     eci?: string;
 }
@@ -134,6 +134,7 @@ export interface StcPaySource {
      * - 05xxxxxxxx
      * - +9665xxxxxxxx
      * - 009665xxxxxxxx
+     * - 9665xxxxxxxx
      */
     mobile: string;
     /** Cashier identifier (shown in Moyasar dashboard) */

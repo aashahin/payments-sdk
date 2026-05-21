@@ -15,6 +15,8 @@ export interface MoyasarConfig {
     sandbox?: boolean;
     /** Webhook secret for verification */
     webhookSecret?: string;
+    /** Request timeout in milliseconds. Default: 30000 */
+    timeoutMs?: number;
 }
 
 /**

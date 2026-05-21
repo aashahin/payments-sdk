@@ -120,6 +120,16 @@ export class RateLimitError extends PaymentError {
 }
 
 /**
+ * Thrown when a requested gateway resource does not exist
+ */
+export class ResourceNotFoundError extends PaymentError {
+    constructor(message = 'Requested resource was not found', public readonly rawError?: unknown) {
+        super(message, 'RESOURCE_NOT_FOUND', 404);
+        this.name = 'ResourceNotFoundError';
+    }
+}
+
+/**
  * Thrown when the request is invalid (validation failed upstream or at gateway)
  */
 export class InvalidRequestError extends PaymentError {

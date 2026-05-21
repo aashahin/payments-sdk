@@ -58,6 +58,12 @@ export type {
   RefundParams,
   VoidParams,
   GetPaymentParams,
+  MoyasarBackendPaymentSource,
+  MoyasarPaymentSplit,
+  MoyasarAftRecipient,
+  MoyasarAftSender,
+  MoyasarCreatePaymentParams,
+  MoyasarConfirmStcPayOtpParams,
   GatewayPaymentResult,
   GatewayRefundResult,
 } from "./types/payment.types";
@@ -153,6 +159,7 @@ export {
   InsufficientFundsError,
   AuthenticationError,
   RateLimitError,
+  ResourceNotFoundError,
   InvalidRequestError,
   NetworkError,
 } from "./errors";

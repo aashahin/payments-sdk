@@ -65,15 +65,17 @@ const client = new PaymentClient({
 const result = await client.createPayment({
   amount: 100,
   currency: 'SAR',
+  orderId: 'order_123',
   callbackUrl: 'https://example.com/callback',
   moyasarSource: {
       type: 'token',
-      token: 'tok_xxx'
+      token: 'token_xxx'
   },
-  metadata: { orderId: 'order_123' },
 });
 
-if (result.redirectUrl) {
+if (result.status === 'failed') {
+  // Do not mark the order paid.
+} else if (result.redirectUrl) {
   // Redirect customer for 3DS verification
 }
 ```

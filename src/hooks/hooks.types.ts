@@ -19,6 +19,7 @@ export type OperationType =
     | 'capturePayment'
     | 'refundPayment'
     | 'voidPayment'
+    | 'confirmStcPayOtp'
     | 'verifyWebhook'
     | 'getPayment'
     | 'createCheckoutSession';

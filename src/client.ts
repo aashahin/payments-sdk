@@ -10,6 +10,7 @@ import type {
   GetPaymentParams,
   GatewayPaymentResult,
   GatewayRefundResult,
+  MoyasarCreatePaymentParams,
   PaymentStatus,
 } from "./types/payment.types";
 import type { WebhookEvent } from "./types/webhook.types";
@@ -111,6 +112,7 @@ export class PaymentClient {
    * @throws {GatewayNotConfiguredError} If gateway is not configured
    */
   gateway(name: "stripe"): StripeGateway;
+  gateway(name: "moyasar"): MoyasarGateway;
   gateway(name: GatewayName): PaymentGateway;
   gateway(name: GatewayName): PaymentGateway {
     const gw = this.gateways.get(name);
@@ -143,9 +145,10 @@ export class PaymentClient {
    */
   async createPayment(params: StripeCreatePaymentParams): Promise<GatewayPaymentResult>;
   async createPayment(params: StripeCreatePaymentParams, gateway: "stripe"): Promise<GatewayPaymentResult>;
+  async createPayment(params: MoyasarCreatePaymentParams, gateway: "moyasar"): Promise<GatewayPaymentResult>;
   async createPayment(params: CreatePaymentParams, gateway?: GatewayName): Promise<GatewayPaymentResult>;
   async createPayment(
-    params: CreatePaymentParams | StripeCreatePaymentParams,
+    params: CreatePaymentParams | StripeCreatePaymentParams | MoyasarCreatePaymentParams,
     gateway?: GatewayName,
   ): Promise<GatewayPaymentResult> {
     const gw = this.resolveGateway(gateway);

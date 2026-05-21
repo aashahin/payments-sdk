@@ -35,7 +35,7 @@ export interface WebhookEvent {
  */
 export interface MoyasarWebhookPayload {
     id: string;
-    type: 'payment_paid' | 'payment_failed' | 'payment_authorized' | string;
+    type: 'payment_paid' | 'payment_faild' | 'payment_failed' | 'payment_authorized' | string;
     created_at: string;
     secret_token: string;
     account_name: string | null;

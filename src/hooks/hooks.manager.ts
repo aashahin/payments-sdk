@@ -150,6 +150,8 @@ export class HooksManager {
                 return this.hooks.beforeCapture as ReturnType<typeof this.getSpecificBeforeHook<T>>;
             case 'refundPayment':
                 return this.hooks.beforeRefund as ReturnType<typeof this.getSpecificBeforeHook<T>>;
+            case 'voidPayment':
+                return this.hooks.beforeVoid as ReturnType<typeof this.getSpecificBeforeHook<T>>;
             default:
                 return undefined;
         }
@@ -168,6 +170,8 @@ export class HooksManager {
                 return this.hooks.afterCapture as ReturnType<typeof this.getSpecificAfterHook<T, R>>;
             case 'refundPayment':
                 return this.hooks.afterRefund as ReturnType<typeof this.getSpecificAfterHook<T, R>>;
+            case 'voidPayment':
+                return this.hooks.afterVoid as ReturnType<typeof this.getSpecificAfterHook<T, R>>;
             default:
                 return undefined;
         }

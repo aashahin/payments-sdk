@@ -58,6 +58,17 @@ export const ApplePaySourceSchema = z.object({
     statementDescriptor: z.string().optional(),
 });
 
+export const ApplePayDecryptedSourceSchema = z.object({
+    type: z.literal("applepay"),
+    dpan: z.string().regex(/^\d{16,19}$/, "Invalid Apple Pay DPAN format"),
+    month: z.number().int().min(1).max(12),
+    year: z.number().int().min(2000),
+    cryptogram: z.string().min(1).max(64),
+    deviceId: z.string().min(8).max(16),
+    lastFour: z.string().regex(/^\d{4}$/).optional(),
+    eci: z.string().regex(/^\d{2}$/).optional(),
+});
+
 export const SamsungPaySourceSchema = z.object({
     type: z.literal("samsungpay"),
     token: z.string(),
@@ -68,18 +79,109 @@ export const SamsungPaySourceSchema = z.object({
 
 export const StcPaySourceSchema = z.object({
     type: z.literal("stcpay"),
-    mobile: z.string().regex(/^(?:05|\+9665|009665)\d{8}$/, "Invalid KSA mobile number"),
+    mobile: z.string().regex(/^(?:05|\+9665|009665|9665)\d{8}$/, "Invalid KSA mobile number"),
     cashier: z.string().optional(),
     branch: z.string().optional(),
 });
 
-export const MoyasarPaymentSourceSchema = z.discriminatedUnion("type", [
+export const MoyasarPaymentSourceSchema = z.union([
     CreditCardSourceSchema,
     CardTokenSourceSchema,
     ApplePaySourceSchema,
+    ApplePayDecryptedSourceSchema,
     SamsungPaySourceSchema,
     StcPaySourceSchema,
 ]);
+
+const MOYASAR_MAX_METADATA_KEYS = 30;
+const MOYASAR_MAX_METADATA_KEY_LENGTH = 40;
+const MOYASAR_MAX_METADATA_VALUE_LENGTH = 500;
+
+const MoyasarPaymentSplitSchema = z.object({
+    amount: z.number().int().refine((amount) => amount !== 0, {
+        message: "Moyasar split amount cannot be zero",
+    }),
+    recipient_id: z.string().uuid("Moyasar split recipient_id must be a UUID"),
+    reference: z.string().max(255).optional(),
+    description: z.string().max(255).optional(),
+    fee_source: z.boolean().optional(),
+    refundable: z.boolean().optional(),
+});
+
+const MoyasarAftRecipientSchema = z.object({
+    first_name: z.string().min(1).max(30),
+    last_name: z.string().min(1).max(35),
+    middle_name: z.string().max(35).optional(),
+    address: z.string().min(1).max(50),
+    street_name: z.string().max(50).optional(),
+    postal_code: z.string().max(10).optional(),
+    locality: z.string().max(25).optional(),
+    country: z.string().length(2).optional(),
+    building_number: z.string().max(19).optional(),
+});
+
+const MoyasarAftSenderSchema = z.object({
+    account: z.object({
+        funds_source: z.string().min(1).max(2),
+        number: z.string().min(1),
+    }),
+    first_name: z.string().min(1).max(30),
+    last_name: z.string().min(1).max(35),
+    address: z.string().min(1).max(50),
+    locality: z.string().max(25).optional(),
+    postal_code: z.string().max(10).optional(),
+    administrative_area: z.string().max(2).optional(),
+    country_code: z.string().length(2),
+    id_type: z.enum([
+        "ARNB",
+        "BTHD",
+        "CPNY",
+        "CUID",
+        "DRLN",
+        "EMAL",
+        "LAWE",
+        "MILI",
+        "NTID",
+        "PASN",
+        "PHON",
+        "PRXY",
+        "SSNB",
+        "TRVL",
+    ]),
+    id: z.string().min(1).max(50),
+    phone_number: z.string().min(1).max(20),
+});
+
+export const MoyasarMetadataSchema = z.record(
+    z.string()
+).superRefine((metadata, ctx) => {
+    const entries = Object.entries(metadata);
+
+    if (entries.length > MOYASAR_MAX_METADATA_KEYS) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Moyasar metadata can include at most ${MOYASAR_MAX_METADATA_KEYS} keys`,
+        });
+    }
+
+    for (const [key, value] of entries) {
+        if (key.length > MOYASAR_MAX_METADATA_KEY_LENGTH) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Moyasar metadata key "${key}" must be ${MOYASAR_MAX_METADATA_KEY_LENGTH} characters or fewer`,
+                path: [key],
+            });
+        }
+
+        if (String(value).length > MOYASAR_MAX_METADATA_VALUE_LENGTH) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Moyasar metadata value for "${key}" must be ${MOYASAR_MAX_METADATA_VALUE_LENGTH} characters or fewer`,
+                path: [key],
+            });
+        }
+    }
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Core Operation Params Schemas
@@ -115,6 +217,15 @@ export const CreatePaymentParamsSchema = z.object({
 
 /** Inferred type from CreatePaymentParamsSchema */
 export type ValidatedCreatePaymentParams = z.infer<typeof CreatePaymentParamsSchema>;
+
+export const MoyasarCreatePaymentParamsSchema = CreatePaymentParamsSchema.extend({
+    callbackUrl: z.string().url("Callback URL must be a valid URL").optional(),
+    metadata: MoyasarMetadataSchema.optional(),
+    idempotencyKey: z.string().uuid("Moyasar idempotencyKey must be a UUID because it becomes the payment ID").optional(),
+    splits: z.array(MoyasarPaymentSplitSchema).optional(),
+    recipient: MoyasarAftRecipientSchema.optional(),
+    sender: MoyasarAftSenderSchema.optional(),
+});
 
 export const StripeCreatePaymentParamsSchema = CreatePaymentParamsSchema.extend({
     callbackUrl: z.string().url("Callback URL must be a valid URL").optional(),
@@ -158,6 +269,26 @@ export const GetPaymentParamsSchema = z.object({
 
 /** Inferred type from GetPaymentParamsSchema */
 export type ValidatedGetPaymentParams = z.infer<typeof GetPaymentParamsSchema>;
+
+const MoyasarGatewayPaymentIdSchema = z.string().uuid(
+    "Moyasar gatewayPaymentId must be a UUID",
+);
+
+export const MoyasarCaptureParamsSchema = CaptureParamsSchema.extend({
+    gatewayPaymentId: MoyasarGatewayPaymentIdSchema,
+});
+
+export const MoyasarRefundParamsSchema = RefundParamsSchema.extend({
+    gatewayPaymentId: MoyasarGatewayPaymentIdSchema,
+});
+
+export const MoyasarVoidParamsSchema = VoidParamsSchema.extend({
+    gatewayPaymentId: MoyasarGatewayPaymentIdSchema,
+});
+
+export const MoyasarGetPaymentParamsSchema = GetPaymentParamsSchema.extend({
+    gatewayPaymentId: MoyasarGatewayPaymentIdSchema,
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Stripe Checkout Session Schemas

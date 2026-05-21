@@ -1,6 +1,9 @@
 // file: packages/payments/src/types/payment.types.ts
 
-import type { MoyasarPaymentSource } from "./moyasar-source.types";
+import type {
+    CreditCardSource,
+    MoyasarPaymentSource,
+} from "./moyasar-source.types";
 
 /**
  * Supported payment gateway names
@@ -99,6 +102,108 @@ export interface CreatePaymentParams {
     returnUrl?: string;
     /** PayPal: Cancel URL if customer cancels */
     cancelUrl?: string;
+}
+
+/**
+ * Moyasar payment source types that are safe to use from a merchant backend.
+ * Raw credit card details must be sent directly from the customer device to Moyasar
+ * or tokenized with Moyasar.js before reaching backend code.
+ */
+export type MoyasarBackendPaymentSource = Exclude<
+    MoyasarPaymentSource,
+    CreditCardSource
+>;
+
+/**
+ * Moyasar split recipient for marketplace/platform payments.
+ * Field names match Moyasar's API payload so callers can copy examples from
+ * Moyasar docs without the SDK silently dropping them.
+ */
+export interface MoyasarPaymentSplit {
+    amount: number;
+    recipient_id: string;
+    reference?: string;
+    description?: string;
+    fee_source?: boolean;
+    refundable?: boolean;
+}
+
+/**
+ * Moyasar AFT recipient payload.
+ * Required only for Account Funding Transaction payment creation.
+ */
+export interface MoyasarAftRecipient {
+    first_name: string;
+    last_name: string;
+    middle_name?: string;
+    address: string;
+    street_name?: string;
+    postal_code?: string;
+    locality?: string;
+    country?: string;
+    building_number?: string;
+}
+
+/**
+ * Moyasar AFT sender payload.
+ * Required only for Account Funding Transaction payment creation.
+ */
+export interface MoyasarAftSender {
+    account: {
+        funds_source: string;
+        number: string;
+    };
+    first_name: string;
+    last_name: string;
+    address: string;
+    locality?: string;
+    postal_code?: string;
+    administrative_area?: string;
+    country_code: string;
+    id_type:
+    | "ARNB"
+    | "BTHD"
+    | "CPNY"
+    | "CUID"
+    | "DRLN"
+    | "EMAL"
+    | "LAWE"
+    | "MILI"
+    | "NTID"
+    | "PASN"
+    | "PHON"
+    | "PRXY"
+    | "SSNB"
+    | "TRVL";
+    id: string;
+    phone_number: string;
+}
+
+/**
+ * Moyasar-specific create params. Moyasar only requires callbackUrl for card
+ * token flows; STC Pay, Apple Pay, and Samsung Pay can omit it.
+ */
+export interface MoyasarCreatePaymentParams
+    extends Omit<CreatePaymentParams, "callbackUrl" | "moyasarSource"> {
+    callbackUrl?: string;
+    moyasarSource?: MoyasarBackendPaymentSource;
+    /** Moyasar marketplace/platform split instructions. */
+    splits?: MoyasarPaymentSplit[];
+    /** Moyasar AFT recipient information. */
+    recipient?: MoyasarAftRecipient;
+    /** Moyasar AFT sender information. */
+    sender?: MoyasarAftSender;
+}
+
+/**
+ * Parameters for confirming an initiated Moyasar STC Pay payment with the OTP
+ * sent to the customer's phone.
+ */
+export interface MoyasarConfirmStcPayOtpParams {
+    /** The `source.transaction_url` returned from the initiated STC Pay payment. */
+    transactionUrl: string;
+    /** OTP value sent to the customer by SMS. */
+    otpValue: string | number;
 }
 
 /**

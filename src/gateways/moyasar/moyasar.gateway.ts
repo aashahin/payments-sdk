@@ -1,5 +1,8 @@
 // file: packages/payments/src/gateways/moyasar.gateway.ts
 
+import { Buffer } from "node:buffer";
+import { timingSafeEqual } from "node:crypto";
+
 import { BaseGateway } from "../base.gateway";
 import type {
   CaptureParams,
@@ -7,6 +10,8 @@ import type {
   GetPaymentParams,
   GatewayPaymentResult,
   GatewayRefundResult,
+  MoyasarConfirmStcPayOtpParams,
+  MoyasarCreatePaymentParams,
   PaymentStatus,
   RefundParams,
   VoidParams,
@@ -19,18 +24,20 @@ import type { MoyasarConfig } from "../../types/config.types";
 import type { HooksManager } from "../../hooks/hooks.manager";
 import type { MoyasarPaymentSource } from "../../types/moyasar-source.types";
 import {
-  CreatePaymentParamsSchema,
-  CaptureParamsSchema,
-  RefundParamsSchema,
-  VoidParamsSchema,
+  MoyasarCreatePaymentParamsSchema,
+  MoyasarCaptureParamsSchema,
+  MoyasarRefundParamsSchema,
+  MoyasarVoidParamsSchema,
+  MoyasarGetPaymentParamsSchema,
 } from "../../types/validation";
 import {
   GatewayApiError,
-  CardDeclinedError,
   AuthenticationError,
   RateLimitError,
   InvalidRequestError,
   NetworkError,
+  InvalidWebhookError,
+  ResourceNotFoundError,
 } from "../../errors";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -46,6 +53,7 @@ type MoyasarPaymentStatus =
   | "paid"
   | "authorized"
   | "failed"
+  | "abandoned"
   | "refunded"
   | "captured"
   | "voided"
@@ -65,6 +73,38 @@ type MoyasarSourceType =
   | "samsungpay"
   | "stcpay"
   | "token";
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+const MOYASAR_MAX_METADATA_VALUE_LENGTH = 500;
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "BIF",
+  "CLP",
+  "DJF",
+  "GNF",
+  "JPY",
+  "KMF",
+  "KRW",
+  "MGA",
+  "PYG",
+  "RWF",
+  "UGX",
+  "VND",
+  "VUV",
+  "XAF",
+  "XOF",
+  "XPF",
+]);
+
+const THREE_DECIMAL_CURRENCIES = new Set([
+  "BHD",
+  "IQD",
+  "JOD",
+  "KWD",
+  "LYD",
+  "OMR",
+  "TND",
+]);
 
 /**
  * Full Moyasar payment response matching official OpenAPI spec
@@ -136,8 +176,6 @@ interface MoyasarPaymentResponse {
     response_code?: string | null;
     /** Authorization code from issuer */
     authorization_code?: string | null;
-    /** STC Pay OTP URL (for stcpay initiated payments) */
-    otp_url?: string | null;
   };
 }
 
@@ -147,12 +185,15 @@ interface MoyasarPaymentResponse {
 interface MoyasarErrorResponse {
   /** Error type category */
   type:
+  | "invalid_request"
   | "invalid_request_error"
   | "authentication_error"
+  | "authorization_error"
   | "rate_limit_error"
   | "api_connection_error"
   | "account_inactive_error"
   | "api_error"
+  | "record_not_found"
   | "3ds_auth_error";
   /** Error message */
   message: string;
@@ -184,21 +225,38 @@ export class MoyasarGateway extends BaseGateway {
    * Supports: creditcard, token, applepay, samsungpay, stcpay
    * @see https://docs.moyasar.com/api/payments/01-create-payment
    */
+  async createPayment(params: CreatePaymentParams): Promise<GatewayPaymentResult>;
+  async createPayment(params: MoyasarCreatePaymentParams): Promise<GatewayPaymentResult>;
   async createPayment(
-    params: CreatePaymentParams,
+    params: CreatePaymentParams | MoyasarCreatePaymentParams,
   ): Promise<GatewayPaymentResult> {
     return this.executeWithHooks("createPayment", params, async (p) => {
       // Build source payload from moyasarSource or legacy tokenId
       const sourcePayload = this.buildSourcePayload(p);
+      const requiresCallback =
+        sourcePayload.type === "creditcard" || sourcePayload.type === "token";
 
+      if (requiresCallback && !p.callbackUrl) {
+        throw new InvalidRequestError(
+          "callbackUrl is required for Moyasar creditcard and token payments",
+        );
+      }
+
+      const metadata = this.buildPaymentMetadata(p);
       const requestBody: Record<string, unknown> = {
-        amount: Math.round(p.amount * 100), // Convert to halalas/cents
+        amount: this.toMinorUnits(p.amount, p.currency),
         currency: p.currency,
-        callback_url: p.callbackUrl,
         description: p.description ?? "Payment",
         source: sourcePayload,
-        metadata: p.metadata,
       };
+
+      if (metadata !== undefined) {
+        requestBody.metadata = metadata;
+      }
+
+      if (p.callbackUrl) {
+        requestBody.callback_url = p.callbackUrl;
+      }
 
       // Add idempotency key (becomes the payment ID)
       if (p.idempotencyKey) {
@@ -210,57 +268,123 @@ export class MoyasarGateway extends BaseGateway {
         requestBody.apply_coupon = p.applyCoupon;
       }
 
-      let response: Response;
-      try {
-        response = await fetch(`${this.baseUrl}/payments`, {
-          method: "POST",
-          headers: this.getHeaders(),
-          body: JSON.stringify(requestBody),
-        });
-      } catch (e) {
-        throw new NetworkError("Failed to connect to Moyasar API", e);
+      if ("splits" in p && p.splits !== undefined) {
+        requestBody.splits = p.splits;
       }
 
-      const data = (await response.json()) as
+      if ("recipient" in p && p.recipient !== undefined) {
+        requestBody.recipient = p.recipient;
+      }
+
+      if ("sender" in p && p.sender !== undefined) {
+        requestBody.sender = p.sender;
+      }
+
+      const data = (await this.requestJson("/payments", {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify(requestBody),
+      }, "Failed to create payment")) as
         | MoyasarPaymentResponse
         | MoyasarErrorResponse;
 
-      if (!response.ok) {
-        throw this.createApiError(
-          data as MoyasarErrorResponse,
-          "Failed to create payment",
-        );
-      }
-
       const payment = data as MoyasarPaymentResponse;
       return this.mapPaymentResponse(payment);
-    }, CreatePaymentParamsSchema);
+    }, MoyasarCreatePaymentParamsSchema);
   }
 
   /**
    * Build the source payload for Moyasar API from our typed source or legacy tokenId
    */
   private buildSourcePayload(
-    params: CreatePaymentParams,
+    params: MoyasarCreatePaymentParams | CreatePaymentParams,
   ): Record<string, unknown> {
     // Prefer new moyasarSource if provided
     if (params.moyasarSource) {
-      return this.mapMoyasarSource(params.moyasarSource);
+      return this.mapMoyasarSource(params.moyasarSource, params.capture);
     }
 
     // Fallback to legacy tokenId
     if (params.tokenId) {
-      return {
+      if (!params.tokenId.startsWith("token_")) {
+        throw new InvalidRequestError(
+          "Moyasar tokenId must start with token_",
+        );
+      }
+
+      const sourcePayload: Record<string, unknown> = {
         type: "token",
         token: params.tokenId,
       };
+
+      if (params.capture === false) {
+        sourcePayload.manual = true;
+      }
+
+      return sourcePayload;
     }
 
-    throw new GatewayApiError(
+    throw new InvalidRequestError(
       "Either moyasarSource or tokenId must be provided for Moyasar payments",
-      "moyasar",
-      { code: "MISSING_PAYMENT_SOURCE" },
     );
+  }
+
+  private buildPaymentMetadata(
+    params: MoyasarCreatePaymentParams | CreatePaymentParams,
+  ): Record<string, string> | undefined {
+    const metadata = {
+      ...(params.metadata as Record<string, string> | undefined),
+    };
+
+    if (params.orderId) {
+      if (params.orderId.length > MOYASAR_MAX_METADATA_VALUE_LENGTH) {
+        throw new InvalidRequestError(
+          `Moyasar orderId must be ${MOYASAR_MAX_METADATA_VALUE_LENGTH} characters or fewer because it is stored in metadata`,
+        );
+      }
+      metadata.orderId ??= params.orderId;
+      metadata.paymentId ??= params.orderId;
+    }
+
+    return this.validatePaymentMetadata(metadata);
+  }
+
+  private validatePaymentMetadata(
+    metadata: Record<string, string>,
+  ): Record<string, string> | undefined {
+    const entries = Object.entries(metadata);
+
+    if (entries.length === 0) {
+      return undefined;
+    }
+
+    if (entries.length > 30) {
+      throw new InvalidRequestError(
+        "Moyasar metadata can include at most 30 keys",
+      );
+    }
+
+    for (const [key, value] of entries) {
+      if (key.length > 40) {
+        throw new InvalidRequestError(
+          `Moyasar metadata key "${key}" must be 40 characters or fewer`,
+        );
+      }
+
+      if (typeof value !== "string") {
+        throw new InvalidRequestError(
+          `Moyasar metadata value for "${key}" must be a string`,
+        );
+      }
+
+      if (value.length > MOYASAR_MAX_METADATA_VALUE_LENGTH) {
+        throw new InvalidRequestError(
+          `Moyasar metadata value for "${key}" must be ${MOYASAR_MAX_METADATA_VALUE_LENGTH} characters or fewer`,
+        );
+      }
+    }
+
+    return metadata;
   }
 
   /**
@@ -268,25 +392,20 @@ export class MoyasarGateway extends BaseGateway {
    */
   private mapMoyasarSource(
     source: MoyasarPaymentSource,
+    capture?: boolean,
   ): Record<string, unknown> {
+    const manual =
+      "manualCapture" in source && source.manualCapture !== undefined
+        ? source.manualCapture
+        : capture === false
+          ? true
+          : undefined;
+
     switch (source.type) {
       case "creditcard":
-        return {
-          type: "creditcard",
-          name: source.name,
-          number: source.number,
-          month: source.month,
-          year: source.year,
-          cvc: source.cvc,
-          ...(source.statementDescriptor && {
-            statement_descriptor: source.statementDescriptor,
-          }),
-          ...(source._3ds !== undefined && { "3ds": source._3ds }),
-          ...(source.manualCapture !== undefined && {
-            manual: source.manualCapture,
-          }),
-          ...(source.saveCard !== undefined && { save_card: source.saveCard }),
-        };
+        throw new InvalidRequestError(
+          "Moyasar raw creditcard source is not supported by this backend SDK. Use Moyasar.js tokenization, Apple Pay, Samsung Pay, or STC Pay so cardholder data is sent directly to Moyasar.",
+        );
 
       case "token":
         return {
@@ -297,9 +416,7 @@ export class MoyasarGateway extends BaseGateway {
             statement_descriptor: source.statementDescriptor,
           }),
           ...(source._3ds !== undefined && { "3ds": source._3ds }),
-          ...(source.manualCapture !== undefined && {
-            manual: source.manualCapture,
-          }),
+          ...(manual !== undefined && { manual }),
         };
 
       case "applepay":
@@ -308,9 +425,7 @@ export class MoyasarGateway extends BaseGateway {
           return {
             type: "applepay",
             token: source.token,
-            ...(source.manualCapture !== undefined && {
-              manual: source.manualCapture,
-            }),
+            ...(manual !== undefined && { manual }),
             ...(source.saveCard !== undefined && {
               save_card: source.saveCard,
             }),
@@ -323,12 +438,12 @@ export class MoyasarGateway extends BaseGateway {
         if ("dpan" in source) {
           return {
             type: "applepay",
-            dpan: source.dpan,
+            number: source.dpan,
             month: source.month,
             year: source.year,
             cryptogram: source.cryptogram,
             device_id: source.deviceId,
-            ...(source.maskedNumber && { masked_number: source.maskedNumber }),
+            ...(source.lastFour && { last_four: source.lastFour }),
             ...(source.eci && { eci: source.eci }),
           };
         }
@@ -342,9 +457,7 @@ export class MoyasarGateway extends BaseGateway {
         return {
           type: "samsungpay",
           token: source.token,
-          ...(source.manualCapture !== undefined && {
-            manual: source.manualCapture,
-          }),
+          ...(manual !== undefined && { manual }),
           ...(source.saveCard !== undefined && { save_card: source.saveCard }),
           ...(source.statementDescriptor && {
             statement_descriptor: source.statementDescriptor,
@@ -381,37 +494,33 @@ export class MoyasarGateway extends BaseGateway {
 
       // Only include amount for partial captures
       if (p.amount !== undefined) {
-        requestBody.amount = Math.round(p.amount * 100);
+        if (!p.currency) {
+          throw new InvalidRequestError(
+            "currency is required for Moyasar partial captures so the amount can be converted to minor units correctly",
+          );
+        }
+        requestBody.amount = this.toMinorUnits(p.amount, p.currency);
       }
 
-      let response: Response;
-      try {
-        response = await fetch(
-          `${this.baseUrl}/payments/${p.gatewayPaymentId}/capture`,
-          {
-            method: "POST",
-            headers: this.getHeaders(),
-            body: JSON.stringify(requestBody),
-          },
-        );
-      } catch (e) {
-        throw new NetworkError("Failed to connect to Moyasar API", e);
+      const init: RequestInit = {
+        method: "POST",
+        headers: this.getHeaders(),
+      };
+      if (Object.keys(requestBody).length > 0) {
+        init.body = JSON.stringify(requestBody);
       }
 
-      const data = (await response.json()) as
+      const data = (await this.requestJson(
+        this.paymentPath(p.gatewayPaymentId, "capture"),
+        init,
+        "Failed to capture payment",
+      )) as
         | MoyasarPaymentResponse
         | MoyasarErrorResponse;
 
-      if (!response.ok) {
-        throw this.createApiError(
-          data as MoyasarErrorResponse,
-          "Failed to capture payment",
-        );
-      }
-
       const payment = data as MoyasarPaymentResponse;
       return this.mapPaymentResponse(payment);
-    }, CaptureParamsSchema);
+    }, MoyasarCaptureParamsSchema);
   }
 
   /**
@@ -425,33 +534,29 @@ export class MoyasarGateway extends BaseGateway {
 
       // Only include amount for partial refunds
       if (p.amount !== undefined) {
-        requestBody.amount = Math.round(p.amount * 100);
+        if (!p.currency) {
+          throw new InvalidRequestError(
+            "currency is required for Moyasar partial refunds so the amount can be converted to minor units correctly",
+          );
+        }
+        requestBody.amount = this.toMinorUnits(p.amount, p.currency);
       }
 
-      let response: Response;
-      try {
-        response = await fetch(
-          `${this.baseUrl}/payments/${p.gatewayPaymentId}/refund`,
-          {
-            method: "POST",
-            headers: this.getHeaders(),
-            body: JSON.stringify(requestBody),
-          },
-        );
-      } catch (e) {
-        throw new NetworkError("Failed to connect to Moyasar API", e);
+      const init: RequestInit = {
+        method: "POST",
+        headers: this.getHeaders(),
+      };
+      if (Object.keys(requestBody).length > 0) {
+        init.body = JSON.stringify(requestBody);
       }
 
-      const data = (await response.json()) as
+      const data = (await this.requestJson(
+        this.paymentPath(p.gatewayPaymentId, "refund"),
+        init,
+        "Failed to refund payment",
+      )) as
         | MoyasarPaymentResponse
         | MoyasarErrorResponse;
-
-      if (!response.ok) {
-        throw this.createApiError(
-          data as MoyasarErrorResponse,
-          "Failed to refund payment",
-        );
-      }
 
       const payment = data as MoyasarPaymentResponse;
 
@@ -461,13 +566,13 @@ export class MoyasarGateway extends BaseGateway {
         success: true,
         gatewayRefundId: payment.id, // Payment ID (refund is tracked on payment)
         status: payment.status === "refunded" ? "completed" : "pending",
-        totalRefunded: payment.refunded / 100, // Convert from halalas to base currency
+        totalRefunded: this.fromMinorUnits(payment.refunded, payment.currency),
         refundedAt: payment.refunded_at
           ? new Date(payment.refunded_at)
           : undefined,
         rawResponse: payment,
       };
-    }, RefundParamsSchema);
+    }, MoyasarRefundParamsSchema);
   }
 
   /**
@@ -477,33 +582,65 @@ export class MoyasarGateway extends BaseGateway {
    */
   async voidPayment(params: VoidParams): Promise<GatewayPaymentResult> {
     return this.executeWithHooks("voidPayment", params, async (p) => {
-      let response: Response;
-      try {
-        response = await fetch(
-          `${this.baseUrl}/payments/${p.gatewayPaymentId}/void`,
-          {
-            method: "POST",
-            headers: this.getHeaders(),
-          },
-        );
-      } catch (e) {
-        throw new NetworkError("Failed to connect to Moyasar API", e);
-      }
-
-      const data = (await response.json()) as
+      const data = (await this.requestJson(
+        this.paymentPath(p.gatewayPaymentId, "void"),
+        {
+          method: "POST",
+          headers: this.getHeaders(),
+        },
+        "Failed to void payment",
+      )) as
         | MoyasarPaymentResponse
         | MoyasarErrorResponse;
 
-      if (!response.ok) {
-        throw this.createApiError(
-          data as MoyasarErrorResponse,
-          "Failed to void payment",
-        );
-      }
-
       const payment = data as MoyasarPaymentResponse;
       return this.mapPaymentResponse(payment);
-    }, VoidParamsSchema);
+    }, MoyasarVoidParamsSchema);
+  }
+
+  /**
+   * Confirm an initiated STC Pay payment using the OTP sent to the customer.
+   * @see https://docs.moyasar.com/guides/stc-pay/custom-ui/
+   */
+  async confirmStcPayOtp(
+    params: MoyasarConfirmStcPayOtpParams,
+  ): Promise<GatewayPaymentResult> {
+    return this.executeWithHooks("confirmStcPayOtp", params, async (p) => {
+      return this.confirmStcPayOtpRequest(p);
+    });
+  }
+
+  private async confirmStcPayOtpRequest(
+    params: MoyasarConfirmStcPayOtpParams,
+  ): Promise<GatewayPaymentResult> {
+    if (!params.transactionUrl) {
+      throw new InvalidRequestError(
+        "transactionUrl is required for Moyasar STC Pay OTP confirmation",
+      );
+    }
+    if (
+      params.otpValue === "" ||
+      params.otpValue === undefined ||
+      params.otpValue === null
+    ) {
+      throw new InvalidRequestError(
+        "otpValue is required for Moyasar STC Pay OTP confirmation",
+      );
+    }
+
+    const transactionUrl = this.assertMoyasarStcTransactionUrl(
+      params.transactionUrl,
+    );
+    const data = (await this.requestJson(transactionUrl, {
+      method: "POST",
+      headers: this.getHeaders({ auth: false }),
+      body: JSON.stringify({ otp_value: params.otpValue }),
+    }, "Failed to confirm STC Pay OTP")) as
+      | MoyasarPaymentResponse
+      | MoyasarErrorResponse;
+
+    const payment = data as MoyasarPaymentResponse;
+    return this.mapPaymentResponse(payment);
   }
 
   /**
@@ -511,19 +648,39 @@ export class MoyasarGateway extends BaseGateway {
    */
   protected mapError(error: unknown): Error {
     if (error instanceof GatewayApiError && error.gatewayName === "moyasar") {
-      const raw = error.rawError as { type?: string; message?: string };
+      const raw = error.rawError as { type?: string; message?: string; status?: number };
       const type = raw?.type;
       const message = raw?.message ?? error.message;
+      const status = raw?.status;
 
       switch (type) {
+        case "invalid_request":
         case "invalid_request_error":
           return new InvalidRequestError(message);
         case "authentication_error":
+        case "authorization_error":
           return new AuthenticationError(message);
         case "rate_limit_error":
           return new RateLimitError("moyasar");
+        case "api_connection_error":
+          return new NetworkError(message);
+        case "record_not_found":
+          return new ResourceNotFoundError(message, raw);
         case "3ds_auth_error":
           return new AuthenticationError(message);
+      }
+
+      if (status === 400) {
+        return new InvalidRequestError(message);
+      }
+      if (status === 401 || status === 403) {
+        return new AuthenticationError(message);
+      }
+      if (status === 429) {
+        return new RateLimitError("moyasar");
+      }
+      if (status === 404) {
+        return new ResourceNotFoundError(message, raw);
       }
     }
     return super.mapError(error);
@@ -539,32 +696,38 @@ export class MoyasarGateway extends BaseGateway {
    * @see https://docs.moyasar.com/guides/dashboard/webhooks
    */
   verifyWebhook(payload: unknown, _signature?: string): boolean {
-    const event = payload as { secret_token?: string };
-
     if (!this.moyasarConfig.webhookSecret) {
       console.warn(
-        "[Moyasar] No webhook secret configured, skipping verification",
+        "[Moyasar] No webhook secret configured, rejecting webhook",
       );
-      return true;
+      return false;
     }
 
-    return event.secret_token === this.moyasarConfig.webhookSecret;
+    if (!this.isRecord(payload) || typeof payload.secret_token !== "string") {
+      return false;
+    }
+
+    return this.constantTimeEquals(
+      payload.secret_token,
+      this.moyasarConfig.webhookSecret,
+    );
   }
 
   /**
    * Parse Moyasar webhook payload into normalized WebhookEvent
    */
   parseWebhookEvent(payload: unknown): WebhookEvent {
-    const raw = payload as MoyasarWebhookPayload;
+    const raw = this.assertMoyasarWebhookPayload(payload);
+    const paymentId = this.extractPaymentId(raw.data.metadata);
 
     return {
       id: raw.id,
-      type: raw.type,
+      type: this.normalizeWebhookEventType(raw.type),
       gateway: "moyasar",
-      paymentId: raw.data.metadata?.paymentId as string | undefined,
+      paymentId,
       gatewayPaymentId: raw.data.id,
       status: this.mapStatus(raw.data.status),
-      amount: raw.data.amount / 100, // Convert from halalas/cents
+      amount: this.fromMinorUnits(raw.data.amount, raw.data.currency),
       currency: raw.data.currency,
       timestamp: new Date(raw.created_at),
       rawPayload: raw,
@@ -589,26 +752,23 @@ export class MoyasarGateway extends BaseGateway {
    * @see https://docs.moyasar.com/api/payments/02-fetch-payment
    */
   async getPayment(params: GetPaymentParams): Promise<GatewayPaymentResult> {
-    const { gatewayPaymentId } = params;
+    return this.executeWithHooks("getPayment", params, async (p) => {
+      const { gatewayPaymentId } = p;
 
-    const response = await fetch(`${this.baseUrl}/payments/${gatewayPaymentId}`, {
-      method: "GET",
-      headers: this.getHeaders(),
-    });
-
-    const data = (await response.json()) as
-      | MoyasarPaymentResponse
-      | MoyasarErrorResponse;
-
-    if (!response.ok) {
-      throw this.createApiError(
-        data as MoyasarErrorResponse,
+      const data = (await this.requestJson(
+        this.paymentPath(gatewayPaymentId),
+        {
+          method: "GET",
+          headers: this.getHeaders(),
+        },
         "Failed to get payment",
-      );
-    }
+      )) as
+        | MoyasarPaymentResponse
+        | MoyasarErrorResponse;
 
-    const payment = data as MoyasarPaymentResponse;
-    return this.mapPaymentResponse(payment);
+      const payment = data as MoyasarPaymentResponse;
+      return this.mapPaymentResponse(payment);
+    }, MoyasarGetPaymentParamsSchema);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -619,39 +779,220 @@ export class MoyasarGateway extends BaseGateway {
    * Get authorization headers for Moyasar API
    * Moyasar uses HTTP Basic Auth with secret key as username
    */
-  private getHeaders(): Record<string, string> {
-    const credentials = btoa(`${this.moyasarConfig.secretKey}:`);
-
-    return {
+  private getHeaders(options: { auth?: boolean } = {}): Record<string, string> {
+    const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
-      Authorization: `Basic ${credentials}`,
     };
+
+    if (options.auth !== false) {
+      const credentials = btoa(`${this.moyasarConfig.secretKey}:`);
+      headers.Authorization = `Basic ${credentials}`;
+    }
+
+    return headers;
   }
 
   /**
    * Map Moyasar payment response to unified GatewayPaymentResult
-   * Note: For STC Pay, otp_url is used instead of transaction_url
+   * Note: Card and STC Pay challenge URLs are returned in transaction_url
    */
   private mapPaymentResponse(
     payment: MoyasarPaymentResponse,
   ): GatewayPaymentResult {
-    // STC Pay uses otp_url, card payments use transaction_url
-    // Handle cases where source might not be present (e.g., error responses)
-    const redirectUrl =
-      payment.source?.transaction_url ?? payment.source?.otp_url ?? undefined;
+    const transactionUrl = payment.source?.transaction_url ?? undefined;
+    const redirectUrl = payment.source?.type === "stcpay"
+      ? undefined
+      : transactionUrl;
+    const nextAction = this.mapNextAction(payment);
 
     return {
-      success: true,
+      success: payment.status !== "failed" && payment.status !== "abandoned",
       gatewayId: payment.id,
       status: this.mapStatus(payment.status),
       redirectUrl,
-      amount: payment.amount / 100, // Convert to base currency
-      fee: payment.fee / 100,
-      capturedAmount: payment.captured / 100,
-      refundedAmount: payment.refunded / 100,
+      ...(nextAction !== undefined ? { nextAction } : {}),
+      amount: this.fromMinorUnits(payment.amount, payment.currency),
+      fee: this.fromMinorUnits(payment.fee, payment.currency),
+      capturedAmount: this.fromMinorUnits(payment.captured, payment.currency),
+      refundedAmount: this.fromMinorUnits(payment.refunded, payment.currency),
       rawResponse: payment,
     };
+  }
+
+  private toMinorUnits(amount: number, currency: string): number {
+    const exponent = this.getCurrencyExponent(currency);
+    const minorAmount = amount * 10 ** exponent;
+    const roundedMinorAmount = Math.round(minorAmount);
+
+    if (!Number.isSafeInteger(roundedMinorAmount)) {
+      throw new InvalidRequestError(
+        `Moyasar amount for ${currency.toUpperCase()} is too large to represent safely in minor units`,
+      );
+    }
+
+    if (roundedMinorAmount < 1) {
+      throw new InvalidRequestError(
+        `Moyasar amount for ${currency.toUpperCase()} must be at least one minor currency unit`,
+      );
+    }
+
+    if (Math.abs(minorAmount - roundedMinorAmount) > 1e-8) {
+      throw new InvalidRequestError(
+        `Moyasar amount for ${currency.toUpperCase()} has more decimal places than the currency supports`,
+      );
+    }
+
+    return roundedMinorAmount;
+  }
+
+  private fromMinorUnits(amount: number, currency: string): number {
+    const exponent = this.getCurrencyExponent(currency);
+    return amount / 10 ** exponent;
+  }
+
+  private getCurrencyExponent(currency: string): number {
+    const normalizedCurrency = currency.toUpperCase();
+    if (ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency)) {
+      return 0;
+    }
+    if (THREE_DECIMAL_CURRENCIES.has(normalizedCurrency)) {
+      return 3;
+    }
+    return 2;
+  }
+
+  private constantTimeEquals(left: string, right: string): boolean {
+    const leftBuffer = Buffer.from(left);
+    const rightBuffer = Buffer.from(right);
+
+    if (leftBuffer.length !== rightBuffer.length) {
+      const length = Math.max(leftBuffer.length, rightBuffer.length);
+      const paddedLeft = Buffer.alloc(length);
+      const paddedRight = Buffer.alloc(length);
+      leftBuffer.copy(paddedLeft);
+      rightBuffer.copy(paddedRight);
+      timingSafeEqual(paddedLeft, paddedRight);
+      return false;
+    }
+
+    return timingSafeEqual(leftBuffer, rightBuffer);
+  }
+
+  private assertMoyasarWebhookPayload(payload: unknown): MoyasarWebhookPayload {
+    if (!this.isRecord(payload)) {
+      throw new InvalidWebhookError("Invalid Moyasar webhook payload");
+    }
+
+    const data = payload.data;
+    if (!this.isRecord(data)) {
+      throw new InvalidWebhookError("Invalid Moyasar webhook payload: missing data");
+    }
+
+    if (
+      typeof payload.id !== "string" ||
+      typeof payload.type !== "string" ||
+      typeof payload.created_at !== "string" ||
+      typeof data.id !== "string" ||
+      typeof data.status !== "string" ||
+      typeof data.amount !== "number" ||
+      typeof data.currency !== "string"
+    ) {
+      throw new InvalidWebhookError("Invalid Moyasar webhook payload fields");
+    }
+
+    return payload as unknown as MoyasarWebhookPayload;
+  }
+
+  private extractPaymentId(metadata: unknown): string | undefined {
+    if (!this.isRecord(metadata)) {
+      return undefined;
+    }
+
+    if (typeof metadata.paymentId === "string") {
+      return metadata.paymentId;
+    }
+
+    return typeof metadata.orderId === "string"
+      ? metadata.orderId
+      : undefined;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  private paymentPath(
+    paymentId: string,
+    operation?: "capture" | "refund" | "void",
+  ): string {
+    const encodedPaymentId = encodeURIComponent(paymentId);
+    return operation
+      ? `/payments/${encodedPaymentId}/${operation}`
+      : `/payments/${encodedPaymentId}`;
+  }
+
+  private normalizeWebhookEventType(type: string): string {
+    return type === "payment_faild" ? "payment_failed" : type;
+  }
+
+  private async requestJson(
+    urlOrPath: string,
+    init: RequestInit,
+    fallbackMessage: string,
+  ): Promise<unknown> {
+    const response = await this.request(urlOrPath, init);
+    const data = (await this.parseJsonResponse(response)) as
+      | MoyasarPaymentResponse
+      | MoyasarErrorResponse;
+
+    if (!response.ok) {
+      throw this.createApiError(
+        data as MoyasarErrorResponse,
+        fallbackMessage,
+        response.status,
+      );
+    }
+
+    return data;
+  }
+
+  private async request(urlOrPath: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutMs = this.moyasarConfig.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const url = urlOrPath.startsWith("http")
+      ? urlOrPath
+      : `${this.baseUrl}${urlOrPath}`;
+
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+    } catch (e) {
+      const errorName = this.isRecord(e) && typeof e.name === "string"
+        ? e.name
+        : undefined;
+      if (errorName === "AbortError") {
+        throw new NetworkError("Moyasar API request timed out", e);
+      }
+      throw new NetworkError("Failed to connect to Moyasar API", e);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async parseJsonResponse(response: Response): Promise<unknown> {
+    try {
+      return await response.json();
+    } catch (e) {
+      throw new GatewayApiError(
+        "Moyasar API returned an invalid JSON response",
+        "moyasar",
+        { status: response.status, cause: e },
+      );
+    }
   }
 
   /**
@@ -665,6 +1006,7 @@ export class MoyasarGateway extends BaseGateway {
       verified: "authorized", // Card verification (0-amount auth)
       captured: "paid",
       paid: "paid",
+      abandoned: "failed",
       failed: "failed",
       refunded: "refunded",
       voided: "cancelled",
@@ -673,26 +1015,79 @@ export class MoyasarGateway extends BaseGateway {
     return statusMap[moyasarStatus] ?? "pending";
   }
 
+  private mapNextAction(payment: MoyasarPaymentResponse): unknown {
+    const transactionUrl = payment.source?.transaction_url;
+    if (!transactionUrl || payment.status !== "initiated") {
+      return undefined;
+    }
+
+    if (payment.source.type === "stcpay") {
+      return {
+        type: "stcpay_otp",
+        transactionUrl,
+        method: "POST",
+        parameter: "otp_value",
+      };
+    }
+
+    return {
+      type: "redirect",
+      url: transactionUrl,
+    };
+  }
+
+  private assertMoyasarStcTransactionUrl(transactionUrl: string): string {
+    let url: URL;
+    try {
+      url = new URL(transactionUrl);
+    } catch {
+      throw new InvalidRequestError(
+        "Moyasar STC Pay transactionUrl must be a valid URL",
+      );
+    }
+
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "api.moyasar.com" ||
+      !url.pathname.startsWith("/v1/stc_pays/") ||
+      !url.pathname.endsWith("/proceed")
+    ) {
+      throw new InvalidRequestError(
+        "Moyasar STC Pay transactionUrl must be the transaction_url returned by Moyasar",
+      );
+    }
+
+    return url.toString();
+  }
+
   /**
    * Create a structured API error from Moyasar error response
    */
   private createApiError(
     errorData: MoyasarErrorResponse,
     fallbackMessage: string,
+    status?: number,
   ): GatewayApiError {
     let message = errorData.message ?? fallbackMessage;
 
     // Append validation errors if present
     if (errorData.errors) {
       const errorDetails = Object.entries(errorData.errors)
-        .map(([field, messages]) => `${field}: ${messages.join(", ")}`)
+        .map(([field, messages]) => {
+          const detail = Array.isArray(messages)
+            ? messages.join(", ")
+            : String(messages);
+          return `${field}: ${detail}`;
+        })
         .join("; ");
       message = `${message} - ${errorDetails}`;
     }
 
     return new GatewayApiError(message, "moyasar", {
       type: errorData.type,
+      message,
       errors: errorData.errors,
+      status,
     });
   }
 }
