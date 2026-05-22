@@ -22,6 +22,10 @@ export interface WebhookEvent {
     gatewayToken?: string | undefined;
     /** Normalized payment status */
     status: PaymentStatus;
+    /** Whether the gateway event came from live mode when the gateway exposes that flag. */
+    livemode?: boolean | undefined;
+    /** Gateway API version that shaped the webhook payload, when exposed. */
+    apiVersion?: string | undefined;
     /** Amount in base currency units, when the gateway event includes money details */
     amount?: number | undefined;
     /** Currency code, when the gateway event includes money details */
@@ -292,6 +296,7 @@ export interface PaymobRedirectWebhookPayload {
 export interface StripeWebhookPayload {
     id: string;
     type: string;
+    api_version?: string | null;
     created: number;
     data: {
         object: {

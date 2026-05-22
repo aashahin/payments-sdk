@@ -274,6 +274,7 @@ export const RefundParamsSchema = z.object({
     gatewayPaymentId: z.string().min(1),
     amount: z.number().positive().optional(),
     reason: z.string().optional(),
+    metadata: z.record(z.unknown()).optional(),
     currency: z.string().length(3).optional(),
     idempotencyKey: z.string().optional(),
 }).passthrough();

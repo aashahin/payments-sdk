@@ -184,11 +184,12 @@ const refund = await stripe.refundPayment({
     amount: 50,
     currency: 'USD',
     reason: 'requested_by_customer',
+    metadata: { paymentId: 'order_1234' },
     idempotencyKey: crypto.randomUUID(),
 });
 ```
 
-Stripe-supported reasons (`duplicate`, `fraudulent`, `requested_by_customer`) are sent to Stripe as `reason`. Other custom reason strings are attached as `metadata.reason`.
+Stripe-supported reasons (`duplicate`, `fraudulent`, `requested_by_customer`) are sent to Stripe as `reason`. Other custom reason strings are attached as `metadata.reason`. Caller-provided refund metadata is forwarded to Stripe and is useful for binding refund webhooks back to your own transaction or order records.
 
 When passing a partial refund `amount`, `currency` is required. Omit `amount` for a full refund. After creating the refund, the gateway asks Stripe for refunds on the PaymentIntent so `totalRefunded` reflects cumulative succeeded refunds. Pending or action-required refunds are not counted until Stripe marks them succeeded. If that follow-up lookup fails after Stripe has already accepted the refund, `totalRefunded` is left undefined rather than reporting the single refund amount as a false cumulative total.
 

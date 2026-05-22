@@ -281,6 +281,8 @@ export interface RefundParams {
     amount?: number;
     /** Reason for refund */
     reason?: string;
+    /** Custom metadata to attach to the refund when the gateway supports it */
+    metadata?: Record<string, unknown>;
     /** ISO 4217 currency code (required for PayPal partial refunds) */
     currency?: string;
     /** Idempotency key for safe retries */

@@ -127,6 +127,8 @@ export interface StripeConfig {
     webhookSecret?: string;
     /** API version (optional, defaults to the SDK's pinned Stripe API version) */
     apiVersion?: string;
+    /** Expected webhook endpoint API version. Defaults to apiVersion/the SDK's pinned Stripe API version. */
+    webhookApiVersion?: string;
     /** Request timeout in milliseconds. Default: 30000 */
     timeoutMs?: number;
 }
