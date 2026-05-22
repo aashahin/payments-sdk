@@ -11,6 +11,7 @@ import type {
   GatewayPaymentResult,
   GatewayRefundResult,
   MoyasarCreatePaymentParams,
+  PaymobCreatePaymentParams,
   PaymentStatus,
 } from "./types/payment.types";
 import type { WebhookEvent } from "./types/webhook.types";
@@ -114,6 +115,7 @@ export class PaymentClient {
   gateway(name: "stripe"): StripeGateway;
   gateway(name: "moyasar"): MoyasarGateway;
   gateway(name: "paypal"): PayPalGateway;
+  gateway(name: "paymob"): PaymobGateway;
   gateway(name: GatewayName): PaymentGateway;
   gateway(name: GatewayName): PaymentGateway {
     const gw = this.gateways.get(name);
@@ -147,9 +149,10 @@ export class PaymentClient {
   async createPayment(params: StripeCreatePaymentParams): Promise<GatewayPaymentResult>;
   async createPayment(params: StripeCreatePaymentParams, gateway: "stripe"): Promise<GatewayPaymentResult>;
   async createPayment(params: MoyasarCreatePaymentParams, gateway: "moyasar"): Promise<GatewayPaymentResult>;
+  async createPayment(params: PaymobCreatePaymentParams, gateway: "paymob"): Promise<GatewayPaymentResult>;
   async createPayment(params: CreatePaymentParams, gateway?: GatewayName): Promise<GatewayPaymentResult>;
   async createPayment(
-    params: CreatePaymentParams | StripeCreatePaymentParams | MoyasarCreatePaymentParams,
+    params: CreatePaymentParams | StripeCreatePaymentParams | MoyasarCreatePaymentParams | PaymobCreatePaymentParams,
     gateway?: GatewayName,
   ): Promise<GatewayPaymentResult> {
     const gw = this.resolveGateway(gateway);

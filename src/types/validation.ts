@@ -216,7 +216,23 @@ export const CreatePaymentParamsSchema = z.object({
     cancelUrl: z.string().url().optional(),
 
     // Paymob specific
-    paymobIntegrationId: z.string().optional(),
+    paymobIntegrationId: z.union([z.string().trim().min(1), z.number().int().positive()]).optional(),
+    paymobPaymentMethods: z.array(z.union([z.string().trim().min(1), z.number().int().positive()])).min(1).optional(),
+    paymobIframeId: z.union([z.string().trim().min(1), z.number().int().positive()]).optional(),
+    paymobBillingData: z.object({
+        email: z.string().email(),
+        firstName: z.string().min(1).max(50),
+        lastName: z.string().min(1).max(50),
+        phone: z.string().min(5),
+        country: z.string().optional(),
+        city: z.string().optional(),
+        street: z.string().optional(),
+        building: z.string().optional(),
+        apartment: z.string().optional(),
+        floor: z.string().optional(),
+        postalCode: z.string().optional(),
+        state: z.string().optional(),
+    }).optional(),
 }).passthrough(); // Allow gateway-specific fields not in base schema
 
 /** Inferred type from CreatePaymentParamsSchema */
@@ -229,6 +245,10 @@ export const MoyasarCreatePaymentParamsSchema = CreatePaymentParamsSchema.extend
     splits: z.array(MoyasarPaymentSplitSchema).optional(),
     recipient: MoyasarAftRecipientSchema.optional(),
     sender: MoyasarAftSenderSchema.optional(),
+});
+
+export const PaymobCreatePaymentParamsSchema = CreatePaymentParamsSchema.extend({
+    callbackUrl: z.string().url("Callback URL must be a valid URL").optional(),
 });
 
 export const StripeCreatePaymentParamsSchema = CreatePaymentParamsSchema.extend({

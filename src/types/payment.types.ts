@@ -106,6 +106,32 @@ export interface CreatePaymentParams {
     returnUrl?: string;
     /** PayPal: Cancel URL if customer cancels */
     cancelUrl?: string;
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Paymob-specific fields
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Paymob: Override configured Integration ID/payment method alias for this payment */
+    paymobIntegrationId?: string | number;
+    /** Paymob: Explicit payment methods array for Intention API */
+    paymobPaymentMethods?: Array<string | number>;
+    /** Paymob: Legacy iframe ID override */
+    paymobIframeId?: string | number;
+    /** Paymob: Billing data sent to the Intention/payment key APIs */
+    paymobBillingData?: {
+        email: string;
+        firstName: string;
+        lastName: string;
+        phone: string;
+        country?: string;
+        city?: string;
+        street?: string;
+        building?: string;
+        apartment?: string;
+        floor?: string;
+        postalCode?: string;
+        state?: string;
+    };
 }
 
 /**
@@ -200,6 +226,16 @@ export interface MoyasarCreatePaymentParams
 }
 
 /**
+ * Paymob-specific create params. Paymob Intention API treats callback and
+ * redirection URLs as optional per-payment overrides; dashboard callbacks can
+ * be used instead, especially for non-card payment methods.
+ */
+export interface PaymobCreatePaymentParams
+    extends Omit<CreatePaymentParams, "callbackUrl"> {
+    callbackUrl?: string;
+}
+
+/**
  * Parameters for confirming an initiated Moyasar STC Pay payment with the OTP
  * sent to the customer's phone.
  */
@@ -277,6 +313,8 @@ export interface GatewayPaymentResult {
     success: boolean;
     /** Gateway's primary payment object ID for this operation */
     gatewayId: string;
+    /** Gateway object ID when it is useful to expose separately from the primary ID */
+    gatewayObjectId?: string | undefined;
     /** PayPal order ID, when the operation involves a PayPal order */
     orderId?: string | undefined;
     /** PayPal capture ID, required for PayPal refunds */

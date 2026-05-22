@@ -89,7 +89,11 @@ const client = new PaymentClient({
   paymob: {
     secretKey: '...',
     publicKey: '...',
+    hmacSecret: '...',
+    integrationId: 123456,
+    authIntegrationId: 456789, // for capture: false auth/capture flows
     region: 'ksa',
+    timeoutMs: 30000,
   },
   stripe: {
     secretKey: 'sk_...',

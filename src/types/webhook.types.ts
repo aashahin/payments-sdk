@@ -18,6 +18,8 @@ export interface WebhookEvent {
     gatewayPaymentId: string;
     /** Gateway object ID that emitted the event when different from the payment ID */
     gatewayObjectId?: string | undefined;
+    /** Gateway token emitted by setup/tokenization events, when applicable */
+    gatewayToken?: string | undefined;
     /** Normalized payment status */
     status: PaymentStatus;
     /** Amount in base currency units, when the gateway event includes money details */
@@ -143,35 +145,39 @@ export interface PaymobWebhookPayload {
     type: string;
     obj: {
         /** Transaction ID */
-        id: number;
+        id: number | string;
         /** Whether the transaction is pending */
-        pending: boolean;
+        pending: boolean | string;
         /** Whether the transaction succeeded */
-        success: boolean;
+        success: boolean | string;
         /** Amount in cents */
-        amount_cents: number;
+        amount_cents: number | string;
         /** Currency code */
         currency: string;
         /** ISO timestamp of transaction creation */
         created_at: string;
         /** Whether this is an authorization transaction */
-        is_auth: boolean;
+        is_auth: boolean | string;
         /** Whether this is a capture transaction */
-        is_capture: boolean;
+        is_capture: boolean | string;
         /** Whether this is a void transaction */
-        is_void: boolean;
+        is_void: boolean | string;
         /** Whether this is a refund transaction */
-        is_refund: boolean;
+        is_refund: boolean | string;
+        /** Current Paymob field indicating the transaction has been voided */
+        is_voided?: boolean | string;
+        /** Current Paymob field indicating the transaction has been refunded */
+        is_refunded?: boolean | string;
         /** Whether this is a standalone payment */
-        is_standalone_payment: boolean;
+        is_standalone_payment: boolean | string;
         /** Whether this has a parent transaction */
-        has_parent_transaction: boolean;
+        has_parent_transaction: boolean | string;
         /** Whether an error occurred */
-        error_occured: boolean;
+        error_occured: boolean | string;
         /** Whether 3D Secure was used */
-        is_3d_secure: boolean;
+        is_3d_secure: boolean | string;
         /** Integration ID used */
-        integration_id: number;
+        integration_id: number | string;
         /** Profile ID */
         profile_id: number;
         /** Owner ID (merchant user ID) */
@@ -192,12 +198,20 @@ export interface PaymobWebhookPayload {
         };
         /** Gateway transaction ID */
         transaction_id?: string;
+        /** Total refunded amount in cents, when included by Paymob */
+        refunded_amount_cents?: number | string;
+        /** Total captured amount in cents, when included by Paymob */
+        captured_amount?: number | string;
+        /** Whether the transaction has been captured */
+        is_captured?: boolean | string;
         /** Error/status message from gateway */
         data_message?: string;
         /** Payment key claims - contains extras metadata from Intention API */
         payment_key_claims?: {
             /** Extras object (custom metadata passed during payment creation) */
-            extra?: Record<string, unknown>;
+            extra?: Record<string, unknown> & {
+                creation_extras?: Record<string, unknown>;
+            };
             /** Amount in cents */
             amount_cents?: number;
             /** Currency code */
@@ -210,6 +224,66 @@ export interface PaymobWebhookPayload {
     };
     /** HMAC signature (sent in query params or body) */
     hmac?: string;
+}
+
+/**
+ * Paymob card-token callback payload.
+ * Uses a different HMAC field list from transaction callbacks.
+ * @see https://developers.paymob.com/paymob-docs/developers/webhook-callbacks-and-hmac/hmac/hmac-for-card-tokens
+ */
+export interface PaymobCardTokenWebhookPayload {
+    type: 'TOKEN' | string;
+    obj: {
+        id: number;
+        token: string;
+        masked_pan: string;
+        merchant_id: number;
+        card_subtype: string;
+        created_at: string;
+        email: string;
+        order_id: string | number;
+        user_added?: boolean;
+        next_payment_intention?: string;
+    };
+    hmac?: string;
+}
+
+/**
+ * Paymob transaction response/redirection callback payload.
+ * Paymob sends this through the customer's browser as query parameters, so
+ * values are usually strings even when they represent numbers or booleans.
+ */
+export interface PaymobRedirectWebhookPayload {
+    type?: string;
+    id: string | number;
+    pending: string | boolean;
+    success: string | boolean;
+    amount_cents: string | number;
+    currency: string;
+    created_at?: string;
+    merchant_order_id?: string;
+    order?: string | number;
+    owner?: string | number;
+    integration_id?: string | number;
+    is_3d_secure?: string | boolean;
+    is_auth?: string | boolean;
+    is_capture?: string | boolean;
+    is_refund?: string | boolean;
+    is_refunded?: string | boolean;
+    is_standalone_payment?: string | boolean;
+    is_void?: string | boolean;
+    is_voided?: string | boolean;
+    has_parent_transaction?: string | boolean;
+    error_occured?: string | boolean;
+    "order.id"?: string | number;
+    "source_data.pan"?: string;
+    "source_data.sub_type"?: string;
+    "source_data.type"?: string;
+    source_data_pan?: string;
+    source_data_sub_type?: string;
+    source_data_type?: string;
+    hmac?: string;
+    [key: string]: unknown;
 }
 
 /**

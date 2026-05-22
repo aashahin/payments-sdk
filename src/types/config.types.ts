@@ -40,33 +40,77 @@ export interface PayPalConfig {
  */
 export type PaymobRegion = 'ksa' | 'eg' | 'pk' | 'om' | 'ae';
 
+export type MaybePromise<T> = T | Promise<T>;
+
+export interface PaymobIdempotencyRecord {
+    fingerprint: string;
+    status: 'in_progress' | 'completed' | 'unknown';
+    createdAt: number;
+    expiresAt: number;
+    result?: unknown;
+}
+
+export interface PaymobIdempotencyStore {
+    /**
+     * Optional atomic reservation. Implement with Redis SET NX, a database unique
+     * constraint, or equivalent to prevent duplicate cross-worker API calls.
+     * Return an existing record when the key is already reserved, otherwise store
+     * the supplied in-progress record and return undefined.
+     */
+    reserve?(key: string, record: PaymobIdempotencyRecord): MaybePromise<PaymobIdempotencyRecord | undefined>;
+    get(key: string): MaybePromise<PaymobIdempotencyRecord | undefined>;
+    set(key: string, record: PaymobIdempotencyRecord): MaybePromise<void>;
+    delete(key: string): MaybePromise<void>;
+}
+
 /**
  * Paymob gateway configuration (KSA Unified Intention API)
  * @see https://developers.paymob.com/ksa/getting-started-ksa
  */
 export interface PaymobConfig {
-    /** Secret key for HMAC signature generation (KSA API) */
-    secretKey: string;
-    /** Public key for authorization header (KSA API) */
-    publicKey: string;
+    /** Secret key for Unified Intention API authorization */
+    secretKey?: string;
+    /** Public key used to launch Unified Checkout */
+    publicKey?: string;
     /** HMAC secret for webhook verification */
     hmacSecret?: string;
+    /**
+     * Allow Paymob webhooks without HMAC verification.
+     * Intended only for local development; ignored when NODE_ENV=production.
+     * Production should configure hmacSecret.
+     */
+    allowUnverifiedWebhooks?: boolean;
     /** Region (determines base URL). Default: 'ksa' */
     region?: PaymobRegion;
     /** Optional base URL override (takes precedence over region) */
     baseUrl?: string;
-    /** Integration ID (for specific payment methods) */
-    integrationId?: string;
-    /** Service ID for specific endpoint HMAC calculation */
-    serviceId?: string;
+    /** Integration ID or payment method alias used by the Intention API */
+    integrationId?: string | number;
+    /**
+     * Integration ID/payment method alias for Paymob auth/capture flows.
+     * Used when createPayment receives capture: false and no per-request
+     * paymobIntegrationId/paymobPaymentMethods override is provided.
+     */
+    authIntegrationId?: string | number;
+    /** Legacy iframe ID, required only for deprecated iframe checkout flow */
+    iframeId?: string | number;
+    /** Request timeout in milliseconds. Default: 30000 */
+    timeoutMs?: number;
+    /**
+     * Optional shared idempotency store for Paymob operations. Configure this with
+     * Redis, a database, or another process-wide store when running multiple
+     * workers. Implement reserve atomically for full cross-worker protection.
+     * Without it, idempotency is scoped to one gateway instance.
+     */
+    idempotencyStore?: PaymobIdempotencyStore;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Legacy fields (deprecated, for backward compat with Egypt API)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * @deprecated Use secretKey/publicKey instead for KSA API.
-     * Kept for backward compatibility with Egypt legacy API.
+     * API key used to generate auth tokens for legacy checkout and payment
+     * management APIs such as capture, refund, void, and transaction inquiry.
      */
     apiKey?: string;
 }

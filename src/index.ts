@@ -64,6 +64,7 @@ export type {
   MoyasarAftSender,
   MoyasarCreatePaymentParams,
   MoyasarConfirmStcPayOtpParams,
+  PaymobCreatePaymentParams,
   GatewayPaymentResult,
   GatewayRefundResult,
 } from "./types/payment.types";
@@ -92,6 +93,8 @@ export type {
   MoyasarWebhookPayload,
   PayPalWebhookPayload,
   PaymobWebhookPayload,
+  PaymobCardTokenWebhookPayload,
+  PaymobRedirectWebhookPayload,
   StripeWebhookPayload,
 } from "./types/webhook.types";
 
@@ -100,6 +103,8 @@ export type {
   MoyasarConfig,
   PayPalConfig,
   PaymobConfig,
+  PaymobIdempotencyRecord,
+  PaymobIdempotencyStore,
   StripeConfig,
   TamaraConfig,
   TabbyConfig,
