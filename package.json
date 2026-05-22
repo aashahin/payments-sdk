@@ -1,6 +1,6 @@
 {
   "name": "@abshahin/payments-sdk",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integrate Moyasar, PayPal, Paymob and other payment gateways with type-safe lifecycle hooks and normalized webhooks.",
   "type": "module",
   "main": "./dist/index.js",
