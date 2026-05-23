@@ -214,6 +214,7 @@ export const CreatePaymentParamsSchema = z.object({
     // PayPal specific
     returnUrl: z.string().url().optional(),
     cancelUrl: z.string().url().optional(),
+    paypalShippingPreference: z.enum(["GET_FROM_FILE", "NO_SHIPPING", "SET_PROVIDED_ADDRESS"]).optional(),
 
     // Paymob specific
     paymobIntegrationId: z.union([z.string().trim().min(1), z.number().int().positive()]).optional(),

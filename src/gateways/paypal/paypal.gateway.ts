@@ -371,6 +371,7 @@ export class PayPalGateway extends BaseGateway {
                 payment_method_preference: "IMMEDIATE_PAYMENT_REQUIRED",
                 return_url: p.returnUrl ?? p.callbackUrl,
                 cancel_url: p.cancelUrl ?? p.callbackUrl,
+                shipping_preference: p.paypalShippingPreference ?? "NO_SHIPPING",
                 user_action: "PAY_NOW",
               },
             },

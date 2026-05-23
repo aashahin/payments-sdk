@@ -106,6 +106,8 @@ export interface CreatePaymentParams {
     returnUrl?: string;
     /** PayPal: Cancel URL if customer cancels */
     cancelUrl?: string;
+    /** PayPal: Shipping collection behavior for the approval flow */
+    paypalShippingPreference?: "GET_FROM_FILE" | "NO_SHIPPING" | "SET_PROVIDED_ADDRESS";
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Paymob-specific fields

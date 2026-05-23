@@ -814,6 +814,7 @@ describe('PayPalGateway', () => {
                 description: 'Test payment',
                 idempotencyKey: 'idem-key-123',
                 metadata: { paymentId: 'pay-001' },
+                paypalShippingPreference: 'NO_SHIPPING',
             };
 
             const result = await gateway.createPayment(params);
@@ -842,6 +843,7 @@ describe('PayPalGateway', () => {
                             payment_method_preference: 'IMMEDIATE_PAYMENT_REQUIRED',
                             return_url: 'https://example.com/callback',
                             cancel_url: 'https://example.com/callback',
+                            shipping_preference: 'NO_SHIPPING',
                             user_action: 'PAY_NOW',
                         },
                     },
