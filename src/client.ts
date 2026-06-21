@@ -23,8 +23,6 @@ import { MoyasarGateway } from "./gateways/moyasar/moyasar.gateway";
 import { PayPalGateway } from "./gateways/paypal/paypal.gateway";
 import { PaymobGateway } from "./gateways/paymob/paymob.gateway";
 import { StripeGateway } from "./gateways/stripe/stripe.gateway";
-import { TabbyGateway } from "./gateways/tabby/tabby.gateway";
-import { TamaraGateway } from "./gateways/tamara/tamara.gateway";
 import { GatewayNotConfiguredError, InvalidWebhookError } from "./errors";
 
 /**
@@ -37,7 +35,7 @@ import { GatewayNotConfiguredError, InvalidWebhookError } from "./errors";
  *   defaultGateway: 'moyasar',
  *   hooks: {
  *     beforeCreatePayment: async (ctx) => {
- *       console.log('Creating payment:', ctx.params);
+ *       // inspect or mutate ctx.params here
  *       return { proceed: true };
  *     },
  *   },
@@ -60,46 +58,34 @@ export class PaymentClient {
     this.hooksManager = new HooksManager(config.hooks);
     this.defaultGateway = config.defaultGateway;
 
+    const logger = config.logger;
+
     // Initialize configured gateways
     if (config.moyasar) {
       this.gateways.set(
         "moyasar",
-        new MoyasarGateway(config.moyasar, this.hooksManager),
+        new MoyasarGateway(config.moyasar, this.hooksManager, logger),
       );
     }
 
     if (config.paypal) {
       this.gateways.set(
         "paypal",
-        new PayPalGateway(config.paypal, this.hooksManager),
+        new PayPalGateway(config.paypal, this.hooksManager, logger),
       );
     }
 
     if (config.paymob) {
       this.gateways.set(
         "paymob",
-        new PaymobGateway(config.paymob, this.hooksManager),
+        new PaymobGateway(config.paymob, this.hooksManager, logger),
       );
     }
 
     if (config.stripe) {
       this.gateways.set(
         "stripe",
-        new StripeGateway(config.stripe, this.hooksManager),
-      );
-    }
-
-    if (config.tabby) {
-      this.gateways.set(
-        "tabby",
-        new TabbyGateway(config.tabby, this.hooksManager),
-      );
-    }
-
-    if (config.tamara) {
-      this.gateways.set(
-        "tamara",
-        new TamaraGateway(config.tamara, this.hooksManager),
+        new StripeGateway(config.stripe, this.hooksManager, logger),
       );
     }
   }
@@ -252,7 +238,11 @@ export class PaymentClient {
   ): Promise<WebhookEvent> {
     const gw = this.gateway(gateway);
 
-    // Notify hooks that webhook was received
+    // Notify hooks that a webhook was received.
+    // ⚠️ This fires on the UNVERIFIED payload (verification happens below), so
+    // onWebhookReceived must stay side-effect-free (logging/metrics only).
+    // State-changing logic belongs in onWebhookVerified, which only runs after
+    // verification succeeds.
     await this.hooksManager.runWebhookReceived(gateway, payload);
 
     // Verify webhook authenticity

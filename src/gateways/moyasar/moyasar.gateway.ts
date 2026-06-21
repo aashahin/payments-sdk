@@ -39,6 +39,30 @@ import {
   InvalidWebhookError,
   ResourceNotFoundError,
 } from "../../errors";
+import { withRetry, parseRetryAfterSeconds } from "../../utils/retry";
+import {
+  type IdempotencyStore,
+  fingerprintParams,
+} from "../../utils/idempotency";
+import type { Logger } from "../../utils/logger";
+
+/**
+ * Moyasar has no native idempotency for capture/refund/void, so transient
+ * failures are only retried when an idempotency key (and dedupe store) make a
+ * retry safe. Network errors and 5xx/429 responses are considered transient.
+ */
+function isMoyasarRetryableError(error: unknown): boolean {
+  if (error instanceof NetworkError) {
+    return true;
+  }
+  if (error instanceof GatewayApiError) {
+    const status = (error.rawError as { status?: number } | undefined)?.status;
+    return typeof status === "number" && (status >= 500 || status === 429);
+  }
+  return false;
+}
+
+const NEVER_RETRY = () => false;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Moyasar API Types (matching official OpenAPI spec)
@@ -211,9 +235,118 @@ export class MoyasarGateway extends BaseGateway {
   private readonly baseUrl = "https://api.moyasar.com/v1";
   private readonly moyasarConfig: MoyasarConfig;
 
-  constructor(config: MoyasarConfig, hooks: HooksManager) {
-    super(config, hooks);
+  constructor(config: MoyasarConfig, hooks: HooksManager, logger?: Logger) {
+    super(config, hooks, logger);
     this.moyasarConfig = config;
+  }
+
+  /**
+   * Guard a non-idempotent mutation (refund/capture/void) with an injectable
+   * dedupe store, keyed by idempotencyKey + operation + paymentId. Moyasar has
+   * no native idempotency for these endpoints, so this prevents a retried
+   * mutation from being applied twice (e.g. a double refund).
+   *
+   * Behavior:
+   * - No idempotencyKey or no store configured: runs once, unguarded.
+   * - Already completed for this key: returns the cached result (no API call).
+   * - In progress / outcome unknown for this key: refuses, instead of risking
+   *   a duplicate mutation.
+   * - Definite failure (4xx, validation): clears the reservation so the caller
+   *   can safely retry. Transient/indeterminate failures (network, 5xx) keep an
+   *   "unknown" marker so the operation is never silently re-applied.
+   */
+  private async runIdempotentMutation<R>(
+    operation: "capturePayment" | "refundPayment" | "voidPayment",
+    paymentId: string,
+    idempotencyKey: string | undefined,
+    fingerprintInput: unknown,
+    executor: () => Promise<R>,
+  ): Promise<R> {
+    const store: IdempotencyStore | undefined = this.moyasarConfig.idempotencyStore;
+    if (!idempotencyKey || !store) {
+      return executor();
+    }
+
+    const key = `moyasar:${operation}:${paymentId}:${idempotencyKey}`;
+    const fingerprint = fingerprintParams(fingerprintInput);
+    const createdAt = Date.now();
+
+    const existing = store.reserve
+      ? await store.reserve(key, { status: "in_progress", fingerprint, createdAt })
+      : await this.reserveWithoutAtomicSupport(store, key, fingerprint, createdAt);
+
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new InvalidRequestError(
+          `Moyasar ${operation} idempotencyKey was reused with different parameters`,
+          [{ path: ["idempotencyKey"] }],
+        );
+      }
+      if (existing.status === "completed") {
+        return existing.result as R;
+      }
+      throw new InvalidRequestError(
+        `Moyasar ${operation} with this idempotencyKey is already in progress or its outcome is unknown; resolve it before retrying`,
+        [{ path: ["idempotencyKey"] }],
+      );
+    }
+
+    try {
+      const result = await executor();
+      // The mutation already succeeded; a failure to persist the record must
+      // not turn a successful refund into an error (which could trigger a
+      // double-refund on retry). Best-effort persist, then return.
+      await this.safeStoreWrite(operation, () =>
+        store.set(key, {
+          status: "completed",
+          fingerprint,
+          createdAt: Date.now(),
+          result,
+        }),
+      );
+      return result;
+    } catch (error) {
+      if (isMoyasarRetryableError(error)) {
+        // Outcome is indeterminate: the request may have mutated server-side.
+        // Keep a marker so a later retry refuses rather than double-applying.
+        await this.safeStoreWrite(operation, () =>
+          store.set(key, { status: "unknown", fingerprint, createdAt: Date.now() }),
+        );
+      } else {
+        // Definite failure: clear the reservation so a retry is allowed.
+        await this.safeStoreWrite(operation, () => store.delete(key));
+      }
+      throw error;
+    }
+  }
+
+  /** Run a best-effort idempotency-store write, never throwing on failure. */
+  private async safeStoreWrite(
+    operation: string,
+    write: () => Promise<void> | void,
+  ): Promise<void> {
+    try {
+      await write();
+    } catch (error) {
+      this.logger.warn(
+        `[Moyasar] Failed to persist ${operation} idempotency record; protection for this key may be reduced.`,
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    }
+  }
+
+  private async reserveWithoutAtomicSupport(
+    store: IdempotencyStore,
+    key: string,
+    fingerprint: string,
+    createdAt: number,
+  ) {
+    const existing = await store.get(key);
+    if (existing) {
+      return existing;
+    }
+    await store.set(key, { status: "in_progress", fingerprint, createdAt });
+    return undefined;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -280,11 +413,17 @@ export class MoyasarGateway extends BaseGateway {
         requestBody.sender = p.sender;
       }
 
-      const data = (await this.requestJson("/payments", {
-        method: "POST",
-        headers: this.getHeaders(),
-        body: JSON.stringify(requestBody),
-      }, "Failed to create payment")) as
+      // Only retry create on transient errors when given_id (idempotencyKey)
+      // is present, so Moyasar deduplicates a re-sent request.
+      const data = (await withRetry(
+        () =>
+          this.requestJson("/payments", {
+            method: "POST",
+            headers: this.getHeaders(),
+            body: JSON.stringify(requestBody),
+          }, "Failed to create payment"),
+        { isRetryable: p.idempotencyKey ? isMoyasarRetryableError : NEVER_RETRY },
+      )) as
         | MoyasarPaymentResponse
         | MoyasarErrorResponse;
 
@@ -510,16 +649,21 @@ export class MoyasarGateway extends BaseGateway {
         init.body = JSON.stringify(requestBody);
       }
 
-      const data = (await this.requestJson(
-        this.paymentPath(p.gatewayPaymentId, "capture"),
-        init,
-        "Failed to capture payment",
-      )) as
-        | MoyasarPaymentResponse
-        | MoyasarErrorResponse;
+      return this.runIdempotentMutation(
+        "capturePayment",
+        p.gatewayPaymentId,
+        p.idempotencyKey,
+        { amount: p.amount, currency: p.currency },
+        async () => {
+          const data = (await this.requestJson(
+            this.paymentPath(p.gatewayPaymentId, "capture"),
+            init,
+            "Failed to capture payment",
+          )) as MoyasarPaymentResponse | MoyasarErrorResponse;
 
-      const payment = data as MoyasarPaymentResponse;
-      return this.mapPaymentResponse(payment);
+          return this.mapPaymentResponse(data as MoyasarPaymentResponse);
+        },
+      );
     }, MoyasarCaptureParamsSchema);
   }
 
@@ -550,28 +694,34 @@ export class MoyasarGateway extends BaseGateway {
         init.body = JSON.stringify(requestBody);
       }
 
-      const data = (await this.requestJson(
-        this.paymentPath(p.gatewayPaymentId, "refund"),
-        init,
-        "Failed to refund payment",
-      )) as
-        | MoyasarPaymentResponse
-        | MoyasarErrorResponse;
+      return this.runIdempotentMutation(
+        "refundPayment",
+        p.gatewayPaymentId,
+        p.idempotencyKey,
+        { amount: p.amount, currency: p.currency },
+        async () => {
+          const data = (await this.requestJson(
+            this.paymentPath(p.gatewayPaymentId, "refund"),
+            init,
+            "Failed to refund payment",
+          )) as MoyasarPaymentResponse | MoyasarErrorResponse;
 
-      const payment = data as MoyasarPaymentResponse;
+          const payment = data as MoyasarPaymentResponse;
 
-      // Moyasar returns the payment object with updated refund info
-      // There's no separate refund ID - refund is tracked on the payment
-      return {
-        success: true,
-        gatewayRefundId: payment.id, // Payment ID (refund is tracked on payment)
-        status: payment.status === "refunded" ? "completed" : "pending",
-        totalRefunded: this.fromMinorUnits(payment.refunded, payment.currency),
-        refundedAt: payment.refunded_at
-          ? new Date(payment.refunded_at)
-          : undefined,
-        rawResponse: payment,
-      };
+          // Moyasar returns the payment object with updated refund info.
+          // There's no separate refund ID - refund is tracked on the payment.
+          return {
+            success: true,
+            gatewayRefundId: payment.id, // Payment ID (refund is tracked on payment)
+            status: payment.status === "refunded" ? "completed" : "pending",
+            totalRefunded: this.fromMinorUnits(payment.refunded, payment.currency),
+            refundedAt: payment.refunded_at
+              ? new Date(payment.refunded_at)
+              : undefined,
+            rawResponse: payment,
+          } satisfies GatewayRefundResult;
+        },
+      );
     }, MoyasarRefundParamsSchema);
   }
 
@@ -582,19 +732,24 @@ export class MoyasarGateway extends BaseGateway {
    */
   async voidPayment(params: VoidParams): Promise<GatewayPaymentResult> {
     return this.executeWithHooks("voidPayment", params, async (p) => {
-      const data = (await this.requestJson(
-        this.paymentPath(p.gatewayPaymentId, "void"),
-        {
-          method: "POST",
-          headers: this.getHeaders(),
-        },
-        "Failed to void payment",
-      )) as
-        | MoyasarPaymentResponse
-        | MoyasarErrorResponse;
+      return this.runIdempotentMutation(
+        "voidPayment",
+        p.gatewayPaymentId,
+        p.idempotencyKey,
+        {},
+        async () => {
+          const data = (await this.requestJson(
+            this.paymentPath(p.gatewayPaymentId, "void"),
+            {
+              method: "POST",
+              headers: this.getHeaders(),
+            },
+            "Failed to void payment",
+          )) as MoyasarPaymentResponse | MoyasarErrorResponse;
 
-      const payment = data as MoyasarPaymentResponse;
-      return this.mapPaymentResponse(payment);
+          return this.mapPaymentResponse(data as MoyasarPaymentResponse);
+        },
+      );
     }, MoyasarVoidParamsSchema);
   }
 
@@ -697,7 +852,7 @@ export class MoyasarGateway extends BaseGateway {
    */
   verifyWebhook(payload: unknown, _signature?: string): boolean {
     if (!this.moyasarConfig.webhookSecret) {
-      console.warn(
+      this.logger.warn(
         "[Moyasar] No webhook secret configured, rejecting webhook",
       );
       return false;
@@ -755,13 +910,18 @@ export class MoyasarGateway extends BaseGateway {
     return this.executeWithHooks("getPayment", params, async (p) => {
       const { gatewayPaymentId } = p;
 
-      const data = (await this.requestJson(
-        this.paymentPath(gatewayPaymentId),
-        {
-          method: "GET",
-          headers: this.getHeaders(),
-        },
-        "Failed to get payment",
+      // GET is safe to retry unconditionally.
+      const data = (await withRetry(
+        () =>
+          this.requestJson(
+            this.paymentPath(gatewayPaymentId),
+            {
+              method: "GET",
+              headers: this.getHeaders(),
+            },
+            "Failed to get payment",
+          ),
+        { isRetryable: isMoyasarRetryableError },
       )) as
         | MoyasarPaymentResponse
         | MoyasarErrorResponse;
@@ -951,6 +1111,7 @@ export class MoyasarGateway extends BaseGateway {
         data as MoyasarErrorResponse,
         fallbackMessage,
         response.status,
+        response.headers,
       );
     }
 
@@ -1067,6 +1228,7 @@ export class MoyasarGateway extends BaseGateway {
     errorData: MoyasarErrorResponse,
     fallbackMessage: string,
     status?: number,
+    headers?: Headers,
   ): GatewayApiError {
     let message = errorData.message ?? fallbackMessage;
 
@@ -1083,11 +1245,20 @@ export class MoyasarGateway extends BaseGateway {
       message = `${message} - ${errorDetails}`;
     }
 
-    return new GatewayApiError(message, "moyasar", {
+    const error = new GatewayApiError(message, "moyasar", {
       type: errorData.type,
       message,
       errors: errorData.errors,
       status,
     });
+
+    // Expose Retry-After (seconds) so the retry helper can honor it on 429s.
+    const retryAfterSeconds = parseRetryAfterSeconds(headers);
+    if (retryAfterSeconds !== undefined) {
+      (error as GatewayApiError & { retryAfterSeconds?: number }).retryAfterSeconds =
+        retryAfterSeconds;
+    }
+
+    return error;
   }
 }

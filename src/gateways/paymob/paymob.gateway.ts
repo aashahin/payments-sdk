@@ -38,6 +38,24 @@ import {
   RateLimitError,
   ResourceNotFoundError,
 } from "../../errors";
+import { withRetry, parseRetryAfterSeconds } from "../../utils/retry";
+import type { Logger } from "../../utils/logger";
+
+/**
+ * Retryable transient errors for safe (idempotent) Paymob requests: network
+ * failures and 5xx/429 responses. Mutations are deliberately NOT retried here;
+ * they go through the indeterminate-outcome idempotency guard instead.
+ */
+function isPaymobRetryableError(error: unknown): boolean {
+  if (error instanceof NetworkError) {
+    return true;
+  }
+  if (error instanceof GatewayApiError) {
+    const status = (error.rawError as { status?: number } | undefined)?.status;
+    return typeof status === "number" && (status >= 500 || status === 429);
+  }
+  return false;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -264,12 +282,56 @@ export class PaymobGateway extends BaseGateway {
   /** Legacy auth token (for Egypt API backward compat) */
   private legacyAuthToken: string | null = null;
   private legacyAuthTokenExpiry: number = 0;
+  /** In-flight token fetch, to dedupe concurrent auth requests. */
+  private legacyAuthTokenPromise: Promise<string> | null = null;
   private readonly idempotencyCache = new Map<string, PaymobIdempotencyCacheEntry>();
 
-  constructor(config: PaymobConfig, hooks: HooksManager) {
-    super(config, hooks);
+  constructor(config: PaymobConfig, hooks: HooksManager, logger?: Logger) {
+    super(config, hooks, logger);
     this.paymobConfig = config;
     this.baseUrl = this.resolveBaseUrl(config);
+    this.warnIfIdempotencyStoreMissing();
+  }
+
+  /**
+   * Paymob's in-memory idempotency cache is per-isolate. On serverless or
+   * Cloudflare Workers, memory is wiped frequently and not shared across
+   * isolates, so duplicate-protection is effectively lost without an external
+   * store. Emit a loud warning when running in such an environment without one.
+   */
+  private warnIfIdempotencyStoreMissing(): void {
+    if (this.paymobConfig.idempotencyStore) {
+      return;
+    }
+    if (this.isLikelyServerlessEnvironment()) {
+      this.logger.warn(
+        "[Paymob] No idempotencyStore configured in a serverless/edge environment. " +
+          "The in-memory idempotency cache is per-isolate and wiped frequently, so it " +
+          "provides almost no protection against duplicate mutations. Configure " +
+          "paymob.idempotencyStore with Redis, a database, or another shared store.",
+      );
+    }
+  }
+
+  private isLikelyServerlessEnvironment(): boolean {
+    // Cloudflare Workers expose WebSocketPair and lack a Node process.
+    const hasNodeProcess =
+      typeof globalThis.process !== "undefined" &&
+      !!globalThis.process?.versions?.node;
+    if (!hasNodeProcess) {
+      return true;
+    }
+
+    const env = globalThis.process?.env ?? {};
+    return Boolean(
+      env.AWS_LAMBDA_FUNCTION_NAME ||
+        env.VERCEL ||
+        env.VERCEL_ENV ||
+        env.FUNCTIONS_WORKER_RUNTIME ||
+        env.K_SERVICE || // Google Cloud Run / Functions
+        env.LAMBDA_TASK_ROOT ||
+        env.NETLIFY,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -797,15 +859,15 @@ export class PaymobGateway extends BaseGateway {
     if (!this.paymobConfig.hmacSecret) {
       if (this.paymobConfig.allowUnverifiedWebhooks) {
         if (!this.allowsLocalUnverifiedWebhooks()) {
-          console.warn("[Paymob] Refusing unverified webhooks outside explicit local/test environments");
+          this.logger.warn("[Paymob] Refusing unverified webhooks outside explicit local/test environments");
           return false;
         }
-        console.warn("[Paymob] Webhook verification explicitly disabled");
+        this.logger.warn("[Paymob] Webhook verification explicitly disabled");
         return this.isTransactionWebhook(payload) ||
           this.isCardTokenWebhook(payload) ||
           Boolean(redirectPayload);
       }
-      console.warn("[Paymob] No HMAC secret configured");
+      this.logger.warn("[Paymob] No HMAC secret configured");
       return false;
     }
 
@@ -816,7 +878,7 @@ export class PaymobGateway extends BaseGateway {
     // Get signature from payload or parameter
     const hmac = signature ?? structuredPayload.hmac ?? redirectPayload?.hmac;
     if (typeof hmac !== "string" || !hmac) {
-      console.warn("[Paymob] No HMAC signature provided");
+      this.logger.warn("[Paymob] No HMAC signature provided");
       return false;
     }
 
@@ -965,50 +1027,53 @@ export class PaymobGateway extends BaseGateway {
       this.assertPaymobTransactionId(gatewayPaymentId, "getPayment");
       const token = await this.getAuthToken();
 
-      const response = await this.fetchPaymob(
-        `${this.baseUrl}/api/acceptance/transactions/${gatewayPaymentId}`,
-        {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
+      // GET inquiry is safe to retry on transient failures.
+      return withRetry(async () => {
+        const response = await this.fetchPaymob(
+          `${this.baseUrl}/api/acceptance/transactions/${gatewayPaymentId}`,
+          {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
           },
-        },
-        "Transaction Inquiry",
-      );
-
-      const data = await this.parseJson<PaymobTransactionResponse | {
-        obj?: Record<string, unknown>;
-        message?: string;
-      }>(response);
-
-      if (!response.ok) {
-        throw new GatewayApiError(
-          data.message ?? "Failed to retrieve Paymob transaction",
-          "paymob",
-          { status: response.status, response: data }
+          "Transaction Inquiry",
         );
-      }
 
-      const transaction = this.normalizeApiTransactionResponse(data, "transaction inquiry");
-      const moneyCurrency = this.resolveMoneyCurrency(transaction, "transaction inquiry");
+        const data = await this.parseJson<PaymobTransactionResponse | {
+          obj?: Record<string, unknown>;
+          message?: string;
+        }>(response);
 
-      return {
-        success: true,
-        gatewayId: String(transaction.id ?? gatewayPaymentId),
-        status: this.mapTransactionStatus(transaction),
-        redirectUrl: undefined,
-        amount: transaction.amount_cents !== undefined
-          ? this.fromMinorUnits(transaction.amount_cents, moneyCurrency)
-          : undefined,
-        capturedAmount: transaction.captured_amount !== undefined
-          ? this.fromMinorUnits(transaction.captured_amount, moneyCurrency)
-          : undefined,
-        refundedAmount: transaction.refunded_amount_cents !== undefined
-          ? this.fromMinorUnits(transaction.refunded_amount_cents, moneyCurrency)
-          : undefined,
-        rawResponse: data,
-      };
+        if (!response.ok) {
+          throw this.createPaymobApiError(
+            data.message ?? "Failed to retrieve Paymob transaction",
+            response,
+            data,
+          );
+        }
+
+        const transaction = this.normalizeApiTransactionResponse(data, "transaction inquiry");
+        const moneyCurrency = this.resolveMoneyCurrency(transaction, "transaction inquiry");
+
+        return {
+          success: true,
+          gatewayId: String(transaction.id ?? gatewayPaymentId),
+          status: this.mapTransactionStatus(transaction),
+          redirectUrl: undefined,
+          amount: transaction.amount_cents !== undefined
+            ? this.fromMinorUnits(transaction.amount_cents, moneyCurrency)
+            : undefined,
+          capturedAmount: transaction.captured_amount !== undefined
+            ? this.fromMinorUnits(transaction.captured_amount, moneyCurrency)
+            : undefined,
+          refundedAmount: transaction.refunded_amount_cents !== undefined
+            ? this.fromMinorUnits(transaction.refunded_amount_cents, moneyCurrency)
+            : undefined,
+          rawResponse: data,
+        };
+      }, { isRetryable: isPaymobRetryableError });
     }, GetPaymentParamsSchema);
   }
 
@@ -1134,29 +1199,53 @@ export class PaymobGateway extends BaseGateway {
     gatewayPaymentId: string,
     operation: string,
   ): Promise<PaymobTransactionResponse> {
-    const response = await this.fetchPaymob(
-      `${this.baseUrl}/api/acceptance/transactions/${gatewayPaymentId}`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+    // GET inquiry is safe to retry on transient failures.
+    return withRetry(async () => {
+      const response = await this.fetchPaymob(
+        `${this.baseUrl}/api/acceptance/transactions/${gatewayPaymentId}`,
+        {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
         },
-      },
-      `Transaction Inquiry for ${operation}`,
-    );
-
-    const data = await this.parseJson<PaymobTransactionResponse>(response);
-
-    if (!response.ok) {
-      throw new GatewayApiError(
-        data.message ?? `Failed to retrieve Paymob transaction for ${operation}`,
-        "paymob",
-        { status: response.status, response: data },
+        `Transaction Inquiry for ${operation}`,
       );
-    }
 
-    return this.normalizeApiTransactionResponse(data, operation);
+      const data = await this.parseJson<PaymobTransactionResponse>(response);
+
+      if (!response.ok) {
+        throw this.createPaymobApiError(
+          data.message ?? `Failed to retrieve Paymob transaction for ${operation}`,
+          response,
+          data,
+        );
+      }
+
+      return this.normalizeApiTransactionResponse(data, operation);
+    }, { isRetryable: isPaymobRetryableError });
+  }
+
+  /**
+   * Build a GatewayApiError that carries the response status and any
+   * Retry-After delay so the retry helper can honor it on 429s.
+   */
+  private createPaymobApiError(
+    message: string,
+    response: Response,
+    data: unknown,
+  ): GatewayApiError {
+    const error = new GatewayApiError(message, "paymob", {
+      status: response.status,
+      response: data,
+    });
+    const retryAfterSeconds = parseRetryAfterSeconds(response.headers);
+    if (retryAfterSeconds !== undefined) {
+      (error as GatewayApiError & { retryAfterSeconds?: number }).retryAfterSeconds =
+        retryAfterSeconds;
+    }
+    return error;
   }
 
   /**
@@ -1263,6 +1352,8 @@ export class PaymobGateway extends BaseGateway {
 
   /**
    * Authenticate with Paymob token API for legacy checkout and management APIs.
+   * Uses an in-flight promise so concurrent callers share a single auth request
+   * instead of stampeding the /api/auth/tokens endpoint.
    */
   private async authenticateLegacy(): Promise<string> {
     // Check if we have a valid cached token
@@ -1270,6 +1361,20 @@ export class PaymobGateway extends BaseGateway {
       return this.legacyAuthToken;
     }
 
+    // Reuse an in-flight token fetch if one is already running.
+    if (this.legacyAuthTokenPromise) {
+      return this.legacyAuthTokenPromise;
+    }
+
+    this.legacyAuthTokenPromise = this.fetchLegacyAuthToken();
+    try {
+      return await this.legacyAuthTokenPromise;
+    } finally {
+      this.legacyAuthTokenPromise = null;
+    }
+  }
+
+  private async fetchLegacyAuthToken(): Promise<string> {
     const apiKey = this.paymobConfig.apiKey;
     if (!apiKey) {
       throw new GatewayApiError(
@@ -1279,6 +1384,9 @@ export class PaymobGateway extends BaseGateway {
       );
     }
 
+    // Auth is intentionally not auto-retried: a transient preflight auth
+    // failure should surface so the caller can retry the whole operation
+    // without poisoning an idempotency reservation for the mutation.
     const response = await this.fetchPaymob(
       `${this.baseUrl}/api/auth/tokens`,
       {
@@ -1292,23 +1400,70 @@ export class PaymobGateway extends BaseGateway {
     const data = await this.parseJson<PaymobAuthResponse>(response);
 
     if (!response.ok) {
-      throw new GatewayApiError(
+      throw this.createPaymobApiError(
         data.message ?? "Failed to authenticate with Paymob",
-        "paymob",
-        { status: response.status, response: data },
+        response,
+        data,
       );
     }
+
     const token = this.requireString(
       data.token,
       "Paymob Auth API response is missing token",
       data,
     );
 
-    // Cache token for 50 minutes (token expires in 1 hour)
     this.legacyAuthToken = token;
-    this.legacyAuthTokenExpiry = Date.now() + 50 * 60 * 1000;
+    this.legacyAuthTokenExpiry = this.resolveAuthTokenExpiry(token);
 
     return this.legacyAuthToken;
+  }
+
+  /**
+   * Determine when to refresh the cached auth token. Prefer the actual expiry
+   * encoded in the JWT (`exp`), refreshing 5 minutes early; fall back to 50
+   * minutes when the expiry can't be read.
+   */
+  private resolveAuthTokenExpiry(token: string): number {
+    const FALLBACK_MS = 50 * 60 * 1000;
+    const fallback = Date.now() + FALLBACK_MS;
+
+    const expiryMs = this.decodeJwtExpiryMs(token);
+    if (expiryMs === undefined) {
+      return fallback;
+    }
+
+    const refreshSkewMs = 5 * 60 * 1000;
+    const withSkew = expiryMs - refreshSkewMs;
+    return withSkew > Date.now() ? withSkew : fallback;
+  }
+
+  /**
+   * Decode the `exp` claim (epoch seconds) from a JWT without verifying its
+   * signature. Returns the expiry in milliseconds, or undefined if the token is
+   * not a decodable JWT.
+   */
+  private decodeJwtExpiryMs(token: string): number | undefined {
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+      return undefined;
+    }
+
+    try {
+      const base64 = parts[1]!.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = base64.padEnd(
+        base64.length + ((4 - (base64.length % 4)) % 4),
+        "=",
+      );
+      const json = atob(padded);
+      const payload = JSON.parse(json) as { exp?: unknown };
+      if (typeof payload.exp === "number" && Number.isFinite(payload.exp)) {
+        return payload.exp * 1000;
+      }
+    } catch {
+      // Not a decodable JWT; fall back to the default expiry.
+    }
+    return undefined;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1392,7 +1547,7 @@ export class PaymobGateway extends BaseGateway {
       return;
     }
 
-    console.warn(
+    this.logger.warn(
       "[Paymob] notification_url/redirection_url are documented for card integrations; configure dashboard callbacks for non-card payment methods.",
     );
   }
@@ -1937,9 +2092,9 @@ export class PaymobGateway extends BaseGateway {
     try {
       await this.setStoredIdempotencyRecord(key, record);
     } catch (error) {
-      console.warn(
+      this.logger.warn(
         `[Paymob] Failed to persist ${operation} idempotency record; keeping in-memory protection only.`,
-        error,
+        { error: error instanceof Error ? error.message : String(error) },
       );
     }
   }
@@ -1951,9 +2106,9 @@ export class PaymobGateway extends BaseGateway {
     try {
       await this.deleteStoredIdempotencyRecord(key);
     } catch (error) {
-      console.warn(
+      this.logger.warn(
         `[Paymob] Failed to delete ${operation} idempotency record after a preflight failure.`,
-        error,
+        { error: error instanceof Error ? error.message : String(error) },
       );
     }
   }

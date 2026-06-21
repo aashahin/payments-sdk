@@ -15,6 +15,7 @@ import type { HookContext, OperationType } from '../hooks/hooks.types';
 import type { HooksManager } from '../hooks/hooks.manager';
 import { z } from 'zod';
 import { PaymentAbortedError, InvalidRequestError, PaymentError } from '../errors';
+import { createRedactingLogger, noopLogger, type Logger } from '../utils/logger';
 
 /**
  * Abstract base gateway that provides hook execution for all operations.
@@ -23,10 +24,22 @@ import { PaymentAbortedError, InvalidRequestError, PaymentError } from '../error
 export abstract class BaseGateway implements PaymentGateway {
     abstract readonly name: GatewayName;
 
+    /**
+     * Redacting logger shared by all gateways. Defaults to a no-op when the
+     * client is created without a logger. Never log secrets/PII directly;
+     * structured context passed here is scrubbed before reaching the sink.
+     */
+    protected readonly logger: Logger;
+
     constructor(
         protected readonly config: GatewayConfig,
-        protected readonly hooks: HooksManager
-    ) { }
+        protected readonly hooks: HooksManager,
+        logger?: Logger
+    ) {
+        // Skip the redacting wrapper entirely when no logger is configured, so
+        // redaction work isn't done for logs that would be discarded anyway.
+        this.logger = logger ? createRedactingLogger(logger) : noopLogger;
+    }
 
     /**
      * Template method that wraps any operation with before/after/error hooks

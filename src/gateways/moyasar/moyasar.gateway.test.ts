@@ -9,6 +9,7 @@ import {
 import type { PaymentHooks } from "../../hooks/hooks.types";
 import type { MoyasarConfig } from "../../types/config.types";
 import { MoyasarGateway } from "./moyasar.gateway";
+import { InMemoryIdempotencyStore } from "../../utils/idempotency";
 
 const CONFIG: MoyasarConfig = {
   secretKey: "sk_test_unit",
@@ -76,6 +77,26 @@ function mockFetchError(error: unknown): void {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     fetchCalls.push({ url: String(input), init });
     throw error;
+  }) as typeof fetch;
+}
+
+function mockFetchSequence(
+  ...responses: Array<{ body: unknown; status?: number } | Error>
+): void {
+  let index = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchCalls.push({ url: String(input), init });
+    const next = responses[index++];
+    if (next === undefined) {
+      throw new Error("Unexpected fetch call");
+    }
+    if (next instanceof Error) {
+      throw next;
+    }
+    return new Response(JSON.stringify(next.body), {
+      status: next.status ?? 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }) as typeof fetch;
 }
 
@@ -918,6 +939,142 @@ describe("MoyasarGateway", () => {
 
       expect(event.type).toBe("payment_failed");
       expect(event.status).toBe("failed");
+    });
+  });
+
+  describe("idempotent mutations", () => {
+    it("replays a completed refund without a second API call", async () => {
+      const idempotencyStore = new InMemoryIdempotencyStore();
+      const gateway = createGateway({ ...CONFIG, idempotencyStore });
+      mockFetchJson(paymentResponse({ status: "refunded", refunded: 10000 }));
+
+      const params = {
+        gatewayPaymentId: PAYMENT_ID,
+        idempotencyKey: "refund-key-1",
+      };
+
+      const first = await gateway.refundPayment(params);
+      const second = await gateway.refundPayment(params);
+
+      expect(first.status).toBe("completed");
+      expect(second).toEqual(first);
+      // Only one network call despite two refundPayment invocations.
+      expect(fetchCalls).toHaveLength(1);
+    });
+
+    it("does not double-refund: a retry after success is a no-op", async () => {
+      const idempotencyStore = new InMemoryIdempotencyStore();
+      const gateway = createGateway({ ...CONFIG, idempotencyStore });
+      mockFetchJson(paymentResponse({ status: "refunded", refunded: 5000 }));
+
+      const params = {
+        gatewayPaymentId: PAYMENT_ID,
+        amount: 50,
+        currency: "SAR",
+        idempotencyKey: "refund-key-2",
+      };
+
+      await gateway.refundPayment(params);
+      await gateway.refundPayment(params);
+      await gateway.refundPayment(params);
+
+      expect(fetchCalls).toHaveLength(1);
+    });
+
+    it("rejects reusing an idempotency key with different parameters", async () => {
+      const idempotencyStore = new InMemoryIdempotencyStore();
+      const gateway = createGateway({ ...CONFIG, idempotencyStore });
+      mockFetchJson(paymentResponse({ status: "refunded", refunded: 5000 }));
+
+      await gateway.refundPayment({
+        gatewayPaymentId: PAYMENT_ID,
+        amount: 50,
+        currency: "SAR",
+        idempotencyKey: "refund-key-3",
+      });
+
+      await expect(
+        gateway.refundPayment({
+          gatewayPaymentId: PAYMENT_ID,
+          amount: 60,
+          currency: "SAR",
+          idempotencyKey: "refund-key-3",
+        }),
+      ).rejects.toBeInstanceOf(InvalidRequestError);
+    });
+
+    it("blocks replay after an indeterminate (network) refund failure", async () => {
+      const idempotencyStore = new InMemoryIdempotencyStore();
+      const gateway = createGateway({ ...CONFIG, idempotencyStore });
+      mockFetchError(new Error("socket closed"));
+
+      const params = {
+        gatewayPaymentId: PAYMENT_ID,
+        idempotencyKey: "refund-key-4",
+      };
+
+      await expect(gateway.refundPayment(params)).rejects.toBeInstanceOf(NetworkError);
+      // The outcome is unknown, so a retry with the same key is refused rather
+      // than risking a double refund.
+      await expect(gateway.refundPayment(params)).rejects.toBeInstanceOf(InvalidRequestError);
+    });
+
+    it("allows retry after a definite (4xx) refund failure", async () => {
+      const idempotencyStore = new InMemoryIdempotencyStore();
+      const gateway = createGateway({ ...CONFIG, idempotencyStore });
+      mockFetchSequence(
+        { body: { type: "invalid_request", message: "bad", errors: null }, status: 400 },
+        { body: paymentResponse({ status: "refunded", refunded: 10000 }) },
+      );
+
+      const params = {
+        gatewayPaymentId: PAYMENT_ID,
+        idempotencyKey: "refund-key-5",
+      };
+
+      await expect(gateway.refundPayment(params)).rejects.toBeInstanceOf(InvalidRequestError);
+      // Definite failure cleared the reservation, so a retry runs the real call.
+      const retried = await gateway.refundPayment(params);
+      expect(retried.status).toBe("completed");
+      expect(fetchCalls).toHaveLength(2);
+    });
+
+    it("retries a 5xx error on createPayment when an idempotency key is present", async () => {
+      const gateway = createGateway();
+      mockFetchSequence(
+        { body: { type: "api_error", message: "server error" }, status: 503 },
+        { body: paymentResponse() },
+      );
+
+      const result = await gateway.createPayment({
+        amount: 100,
+        currency: "SAR",
+        callbackUrl: "https://example.com/cb",
+        tokenId: "token_abc",
+        idempotencyKey: "8f1e4d2a-1c3b-4a5e-9f60-2b7c8d9e0a11",
+      });
+
+      expect(result.success).toBe(true);
+      expect(fetchCalls).toHaveLength(2);
+    });
+
+    it("does not retry createPayment without an idempotency key", async () => {
+      const gateway = createGateway();
+      mockFetchSequence(
+        { body: { type: "api_error", message: "server error" }, status: 503 },
+        { body: paymentResponse() },
+      );
+
+      await expect(
+        gateway.createPayment({
+          amount: 100,
+          currency: "SAR",
+          callbackUrl: "https://example.com/cb",
+          tokenId: "token_abc",
+        }),
+      ).rejects.toBeTruthy();
+      // No idempotency key => no retry => exactly one call.
+      expect(fetchCalls).toHaveLength(1);
     });
   });
 });

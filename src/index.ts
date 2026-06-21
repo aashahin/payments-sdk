@@ -18,7 +18,7 @@
  *   defaultGateway: 'moyasar',
  *   hooks: {
  *     beforeCreatePayment: async (ctx) => {
- *       console.log('Creating payment:', ctx.params.amount);
+ *       // inspect or mutate ctx.params.amount here
  *       return { proceed: true };
  *     },
  *     afterCreatePayment: async (ctx, result) => {
@@ -106,8 +106,6 @@ export type {
   PaymobIdempotencyRecord,
   PaymobIdempotencyStore,
   StripeConfig,
-  TamaraConfig,
-  TabbyConfig,
   GatewayConfig,
 } from "./types/config.types";
 
@@ -133,6 +131,22 @@ export type {
 
 export { HooksManager } from "./hooks/hooks.manager";
 
+// Utilities (logging, idempotency, retry)
+export type { Logger, LogLevel } from "./utils/logger";
+export { noopLogger, redact, createRedactingLogger } from "./utils/logger";
+export type {
+  IdempotencyStore,
+  IdempotencyRecord,
+  IdempotencyStatus,
+} from "./utils/idempotency";
+export { InMemoryIdempotencyStore, fingerprintParams } from "./utils/idempotency";
+export type { RetryConfig, WithRetryOptions } from "./utils/retry";
+export {
+  withRetry,
+  parseRetryAfterSeconds,
+  DEFAULT_RETRY_CONFIG,
+} from "./utils/retry";
+
 // Gateways (for advanced usage / extension)
 export type { PaymentGateway } from "./gateways/gateway.interface";
 export { BaseGateway } from "./gateways/base.gateway";
@@ -140,18 +154,6 @@ export { MoyasarGateway } from "./gateways/moyasar/moyasar.gateway";
 export { PayPalGateway } from "./gateways/paypal/paypal.gateway";
 export { PaymobGateway } from "./gateways/paymob/paymob.gateway";
 export { StripeGateway } from "./gateways/stripe/stripe.gateway";
-export { TamaraGateway } from "./gateways/tamara/tamara.gateway";
-export { TabbyGateway } from "./gateways/tabby/tabby.gateway";
-
-// Tamara-specific types
-export type {
-  TamaraCheckoutSessionParams,
-  TamaraCheckoutSessionResponse,
-  TamaraConsumer,
-  TamaraAddress,
-  TamaraOrderItem,
-  TamaraAmount,
-} from "./types/tamara.types";
 
 // Errors
 export {
@@ -168,14 +170,3 @@ export {
   InvalidRequestError,
   NetworkError,
 } from "./errors";
-
-// Tabby-specific types
-export type {
-  TabbyCheckoutSessionParams,
-  TabbyCheckoutSessionResponse,
-  TabbyBuyer,
-  TabbyAddress,
-  TabbyOrder,
-  TabbyOrderItem,
-  TabbyMerchantUrls,
-} from "./types/tabby.types";

@@ -17,6 +17,7 @@ import type { PaymobConfig, PaymobIdempotencyRecord, PaymobIdempotencyStore } fr
 import type { HookContext } from "../../hooks/hooks.types";
 import type { CreatePaymentParams } from "../../types/payment.types";
 import type { PaymobCardTokenWebhookPayload, PaymobWebhookPayload } from "../../types/webhook.types";
+import type { Logger } from "../../utils/logger";
 
 const PAYMOB_TEST_CONFIG: PaymobConfig = {
   secretKey: "sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -177,6 +178,20 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Logger that records warn/error calls as [message, context?] tuples. */
+function captureLogger(sink: unknown[][]): Logger {
+  return {
+    debug: () => {},
+    info: () => {},
+    warn: (message: string, context?: Record<string, unknown>) => {
+      sink.push(context === undefined ? [message] : [message, context]);
+    },
+    error: (message: string, context?: Record<string, unknown>) => {
+      sink.push(context === undefined ? [message] : [message, context]);
+    },
+  };
 }
 
 function mockFetchSequence(...responses: Array<Response | Error>): void {
@@ -389,21 +404,18 @@ describe("PaymobGateway", () => {
     });
 
     it("warns when per-payment callbacks are used with explicit non-card aliases", async () => {
-      const originalWarn = console.warn;
       const warnings: unknown[][] = [];
-      console.warn = (...args: unknown[]) => {
-        warnings.push(args);
-      };
+      const warnGateway = new PaymobGateway(
+        PAYMOB_TEST_CONFIG,
+        hooksManager,
+        captureLogger(warnings),
+      );
       mockFetchSequence(jsonResponse({ id: "pi_test_123", client_secret: "csk_test_123" }));
 
-      try {
-        await gateway.createPayment({
-          ...VALID_CREATE_PARAMS,
-          paymobPaymentMethods: ["wallet"],
-        });
-      } finally {
-        console.warn = originalWarn;
-      }
+      await warnGateway.createPayment({
+        ...VALID_CREATE_PARAMS,
+        paymobPaymentMethods: ["wallet"],
+      });
 
       expect(warnings[0]?.[0]).toContain("notification_url/redirection_url");
     });
@@ -872,15 +884,12 @@ describe("PaymobGateway", () => {
     });
 
     it("does not fail a completed Paymob mutation when the shared idempotency result write fails", async () => {
-      const originalWarn = console.warn;
       const warnings: unknown[][] = [];
-      console.warn = (...args: unknown[]) => {
-        warnings.push(args);
-      };
       const idempotencyStore = new FailingSetIdempotencyStore();
       const actionGateway = new PaymobGateway(
         { ...PAYMOB_ACTION_CONFIG, idempotencyStore },
         hooksManager,
+        captureLogger(warnings),
       );
       mockFetchSequence(
         jsonResponse({ token: "auth_token_123" }),
@@ -888,40 +897,33 @@ describe("PaymobGateway", () => {
         jsonResponse({ id: 123, success: true, refunded_amount_cents: 5000 }),
       );
 
-      try {
-        const params = {
-          gatewayPaymentId: "123456789",
-          amount: 50,
-          currency: "SAR",
-          idempotencyKey: "refund_store_write_fails_after_success",
-        };
-        const first = await actionGateway.refundPayment(params);
-        const second = await actionGateway.refundPayment(params);
+      const params = {
+        gatewayPaymentId: "123456789",
+        amount: 50,
+        currency: "SAR",
+        idempotencyKey: "refund_store_write_fails_after_success",
+      };
+      const first = await actionGateway.refundPayment(params);
+      const second = await actionGateway.refundPayment(params);
 
-        expect(first.status).toBe("completed");
-        expect(second).toBe(first);
-        expect(idempotencyStore.setCalls).toBe(1);
-        expect(warnings[0]?.[0]).toContain("Failed to persist refundPayment idempotency record");
-        expect(fetchCalls.map((call) => call.url)).toEqual([
-          "https://ksa.paymob.com/api/auth/tokens",
-          "https://ksa.paymob.com/api/acceptance/transactions/123456789",
-          "https://ksa.paymob.com/api/acceptance/void_refund/refund",
-        ]);
-      } finally {
-        console.warn = originalWarn;
-      }
+      expect(first.status).toBe("completed");
+      expect(second).toBe(first);
+      expect(idempotencyStore.setCalls).toBe(1);
+      expect(warnings[0]?.[0]).toContain("Failed to persist refundPayment idempotency record");
+      expect(fetchCalls.map((call) => call.url)).toEqual([
+        "https://ksa.paymob.com/api/auth/tokens",
+        "https://ksa.paymob.com/api/acceptance/transactions/123456789",
+        "https://ksa.paymob.com/api/acceptance/void_refund/refund",
+      ]);
     });
 
     it("keeps local unknown-outcome protection when the shared idempotency unknown write fails", async () => {
-      const originalWarn = console.warn;
       const warnings: unknown[][] = [];
-      console.warn = (...args: unknown[]) => {
-        warnings.push(args);
-      };
       const idempotencyStore = new FailingSetIdempotencyStore();
       const actionGateway = new PaymobGateway(
         { ...PAYMOB_ACTION_CONFIG, idempotencyStore },
         hooksManager,
+        captureLogger(warnings),
       );
       mockFetchSequence(
         jsonResponse({ token: "auth_token_123" }),
@@ -929,26 +931,22 @@ describe("PaymobGateway", () => {
         new Error("socket closed after gateway accepted request"),
       );
 
-      try {
-        const params = {
-          gatewayPaymentId: "123456789",
-          amount: 50,
-          currency: "SAR",
-          idempotencyKey: "refund_unknown_store_write_fails",
-        };
+      const params = {
+        gatewayPaymentId: "123456789",
+        amount: 50,
+        currency: "SAR",
+        idempotencyKey: "refund_unknown_store_write_fails",
+      };
 
-        await expect(actionGateway.refundPayment(params)).rejects.toThrow(NetworkError);
-        await expect(actionGateway.refundPayment(params)).rejects.toThrow(InvalidRequestError);
-        expect(idempotencyStore.setCalls).toBe(1);
-        expect(warnings[0]?.[0]).toContain("Failed to persist refundPayment idempotency record");
-        expect(fetchCalls.map((call) => call.url)).toEqual([
-          "https://ksa.paymob.com/api/auth/tokens",
-          "https://ksa.paymob.com/api/acceptance/transactions/123456789",
-          "https://ksa.paymob.com/api/acceptance/void_refund/refund",
-        ]);
-      } finally {
-        console.warn = originalWarn;
-      }
+      await expect(actionGateway.refundPayment(params)).rejects.toThrow(NetworkError);
+      await expect(actionGateway.refundPayment(params)).rejects.toThrow(InvalidRequestError);
+      expect(idempotencyStore.setCalls).toBe(1);
+      expect(warnings[0]?.[0]).toContain("Failed to persist refundPayment idempotency record");
+      expect(fetchCalls.map((call) => call.url)).toEqual([
+        "https://ksa.paymob.com/api/auth/tokens",
+        "https://ksa.paymob.com/api/acceptance/transactions/123456789",
+        "https://ksa.paymob.com/api/acceptance/void_refund/refund",
+      ]);
     });
 
     it("rejects explicit action amounts above the remaining transaction amount", async () => {
@@ -1104,6 +1102,50 @@ describe("PaymobGateway", () => {
       expect(result.amount).toBe(100);
       expect(result.capturedAmount).toBe(40);
       expect(result.refundedAmount).toBe(10);
+    });
+
+    it("dedupes concurrent legacy auth requests with a single in-flight token fetch", async () => {
+      const actionGateway = new PaymobGateway(PAYMOB_ACTION_CONFIG, hooksManager);
+      mockFetchSequence(
+        jsonResponse({ token: "auth_token_123" }),
+        jsonResponse({ id: 1, amount_cents: 100, currency: "SAR" }),
+        jsonResponse({ id: 2, amount_cents: 100, currency: "SAR" }),
+      );
+
+      // Two concurrent inquiries should share one auth request.
+      await Promise.all([
+        actionGateway.getPayment({ gatewayPaymentId: "111111111" }),
+        actionGateway.getPayment({ gatewayPaymentId: "222222222" }),
+      ]);
+
+      const authCalls = fetchCalls.filter((call) =>
+        call.url.endsWith("/api/auth/tokens"),
+      );
+      expect(authCalls).toHaveLength(1);
+    });
+
+    it("reuses a cached token derived from the JWT expiry across calls", async () => {
+      const actionGateway = new PaymobGateway(PAYMOB_ACTION_CONFIG, hooksManager);
+      // JWT with an exp claim ~1 hour in the future.
+      const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+      const exp = Math.floor(Date.now() / 1000) + 3600;
+      const payload = btoa(JSON.stringify({ exp }));
+      const jwt = `${header}.${payload}.sig`;
+
+      mockFetchSequence(
+        jsonResponse({ token: jwt }),
+        jsonResponse({ id: 1, amount_cents: 100, currency: "SAR" }),
+        jsonResponse({ id: 2, amount_cents: 100, currency: "SAR" }),
+      );
+
+      await actionGateway.getPayment({ gatewayPaymentId: "111111111" });
+      await actionGateway.getPayment({ gatewayPaymentId: "222222222" });
+
+      const authCalls = fetchCalls.filter((call) =>
+        call.url.endsWith("/api/auth/tokens"),
+      );
+      // Second call reuses the cached token (valid per JWT exp), no re-auth.
+      expect(authCalls).toHaveLength(1);
     });
 
     it("returns Paymob payment status via transaction inquiry", async () => {
