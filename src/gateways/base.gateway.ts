@@ -36,7 +36,9 @@ export abstract class BaseGateway implements PaymentGateway {
         protected readonly hooks: HooksManager,
         logger?: Logger
     ) {
-        this.logger = createRedactingLogger(logger ?? noopLogger);
+        // Skip the redacting wrapper entirely when no logger is configured, so
+        // redaction work isn't done for logs that would be discarded anyway.
+        this.logger = logger ? createRedactingLogger(logger) : noopLogger;
     }
 
     /**

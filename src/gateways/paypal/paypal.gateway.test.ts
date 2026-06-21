@@ -1,7 +1,7 @@
 // file: packages/payments/src/gateways/paypal/paypal.gateway.test.ts
 // Comprehensive test suite for PayPal Gateway using Bun test runner
 
-import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { PayPalGateway } from './paypal.gateway';
 import { HooksManager } from '../../hooks/hooks.manager';
 import {

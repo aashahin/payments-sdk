@@ -293,23 +293,45 @@ export class MoyasarGateway extends BaseGateway {
 
     try {
       const result = await executor();
-      await store.set(key, {
-        status: "completed",
-        fingerprint,
-        createdAt: Date.now(),
-        result,
-      });
+      // The mutation already succeeded; a failure to persist the record must
+      // not turn a successful refund into an error (which could trigger a
+      // double-refund on retry). Best-effort persist, then return.
+      await this.safeStoreWrite(operation, () =>
+        store.set(key, {
+          status: "completed",
+          fingerprint,
+          createdAt: Date.now(),
+          result,
+        }),
+      );
       return result;
     } catch (error) {
       if (isMoyasarRetryableError(error)) {
         // Outcome is indeterminate: the request may have mutated server-side.
         // Keep a marker so a later retry refuses rather than double-applying.
-        await store.set(key, { status: "unknown", fingerprint, createdAt: Date.now() });
+        await this.safeStoreWrite(operation, () =>
+          store.set(key, { status: "unknown", fingerprint, createdAt: Date.now() }),
+        );
       } else {
         // Definite failure: clear the reservation so a retry is allowed.
-        await store.delete(key);
+        await this.safeStoreWrite(operation, () => store.delete(key));
       }
       throw error;
+    }
+  }
+
+  /** Run a best-effort idempotency-store write, never throwing on failure. */
+  private async safeStoreWrite(
+    operation: string,
+    write: () => Promise<void> | void,
+  ): Promise<void> {
+    try {
+      await write();
+    } catch (error) {
+      this.logger.warn(
+        `[Moyasar] Failed to persist ${operation} idempotency record; protection for this key may be reduced.`,
+        { error: error instanceof Error ? error.message : String(error) },
+      );
     }
   }
 
