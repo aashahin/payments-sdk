@@ -30,11 +30,9 @@ High Priority (Market Essentials)
 
 [x] Stripe Implementation: PaymentIntents and Checkout Sessions implemented. Apple Pay connected via automatic methods.
 
-[x] Tabby: Implement BNPL flow (requires itemized cart support).
-
-[x] Tamara: Implement BNPL flow (requires itemized cart support).
-
 [ ] Apple Pay & Google Pay: Standardize token handling for digital wallets across all MENA gateways.
+
+Note: Tabby and Tamara gateways were removed. Supported gateways are Moyasar, Stripe, Paymob, and PayPal.
 
 
 Mid Priority
@@ -63,11 +61,7 @@ Low Priority / Niche
 
 [x] Stripe (Core & Checkout Verified)
 
-[x] Tabby (Unit tests verified)
-
-[x] Tamara
-
-[ ] Cross-Gateway Consistency Check: Ensure all methods return identical data structures.
+[x] Cross-Gateway Consistency Check: All gateway operations return the shared GatewayPaymentResult / GatewayRefundResult shapes, enforced by TypeScript. Optional fields (e.g. totalRefunded, refundedAt) are populated where the gateway exposes the data.
 
 4. Testing & Reliability
 
@@ -79,9 +73,9 @@ Low Priority / Niche
 
 [ ] Mocking Suite: Build a MockProvider for developers to test locally without API keys.
 
-[ ] Integration Tests: Automated CI/CD tests against gateway sandbox environments.
+[x] Integration Tests: GitHub Actions CI runs bun install, typecheck, and tests on every push/PR.
 
-[ ] Retry Logic: Implement exponential backoff for transient network errors.
+[x] Retry Logic: Shared withRetry helper with exponential backoff for transient network/5xx/429 errors across all gateways. Mutations are retried only when an idempotency key/guard makes it safe.
 
 5. Developer Experience (DX)
 
@@ -89,12 +83,12 @@ Low Priority / Niche
 
 [ ] Discriminated Unions: Refine types so that payment_method dictates required fields (e.g., card vs. bank_transfer).
 
-[ ] Logging & Debug Mode: Add a configurable logger that redacts PII/Card data.
+[x] Logging & Debug Mode: Configurable, injectable Logger (no-op default) that redacts secrets/PII/card data. All gateways log through it; no console.* remains in src/.
 
 [ ] Example Projects: Create a examples/ directory for Express and Next.js integrations.
 
 6. Maintenance & Ops
 
-[ ] Rate Limit Handling (429 errors).
+[x] Rate Limit Handling (429 errors): retries honor the Retry-After header via the shared retry helper.
 
 [ ] Multi-currency conversion logic (optional/internal).

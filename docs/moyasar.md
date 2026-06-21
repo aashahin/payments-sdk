@@ -245,3 +245,42 @@ app.post('/webhooks/moyasar', async (req) => {
 ```
 
 Moyasar currently documents failed payment webhooks as `payment_faild`; the SDK normalizes that typo to `payment_failed` in the returned event while keeping the original payload in `event.rawPayload`.
+
+## Idempotency for refunds, captures, and voids
+
+Moyasar's API has **no native idempotency** for the refund, capture, and void
+endpoints. Without protection, a retried refund (e.g. after a network timeout)
+can refund the customer twice. To guard against this, provide an
+`idempotencyStore` and pass an `idempotencyKey` on the mutating call.
+
+```typescript
+import { PaymentClient, InMemoryIdempotencyStore } from '@abshahin/payments-sdk';
+
+const client = new PaymentClient({
+  moyasar: {
+    secretKey: process.env.MOYASAR_SECRET_KEY!,
+    // Use a process-wide store (Redis/SQL) in production; the in-memory store
+    // only dedupes within a single process.
+    idempotencyStore: new InMemoryIdempotencyStore(),
+  },
+});
+
+await client.refundPayment(
+  { gatewayPaymentId: 'pay_123', amount: 50, currency: 'SAR', idempotencyKey: 'refund-order-987' },
+  'moyasar',
+);
+```
+
+Behavior of the guard, keyed by `idempotencyKey + operation + paymentId`:
+
+- **Completed** for the key: the cached result is returned, no API call is made.
+- **In progress / outcome unknown** for the key: the call is refused rather than
+  risking a duplicate mutation.
+- **Definite failure** (4xx/validation): the reservation is cleared so a retry is
+  allowed.
+- **Transient/indeterminate failure** (network/5xx): an `unknown` marker is kept
+  so the mutation is never silently re-applied — resolve it (e.g. by inspecting
+  the payment) before retrying with the same key.
+
+For full cross-worker protection, implement the store's optional atomic
+`reserve` with Redis `SET NX`, a database unique constraint, or equivalent.

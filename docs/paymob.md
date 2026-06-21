@@ -82,6 +82,14 @@ For auth/capture flows, configure `authIntegrationId` or pass an auth/capture in
 
 Paymob does not expose native idempotency keys for capture, refund, void, or Intention creation. If a network failure or Paymob 5xx response happens after the SDK sends one of those mutating requests, the SDK marks that `idempotencyKey` outcome as unknown and blocks automatic replay. Reconcile via a verified Paymob callback, transaction inquiry, or the Paymob dashboard before issuing a new mutation.
 
+> ⚠️ **Serverless / edge deployments:** the built-in idempotency cache is an
+> in-memory `Map` that lives per isolate and is wiped frequently on platforms
+> like AWS Lambda, Vercel, Cloudflare Workers, and Google Cloud Run, so it
+> provides almost no duplicate protection there. When the SDK detects such an
+> environment and no `idempotencyStore` is configured, it emits a loud warning
+> through the configured logger at startup. **Always configure `idempotencyStore`
+> with a shared store (Redis/SQL) in serverless/multi-worker deployments.**
+
 `callbackUrl` maps to Paymob's optional `notification_url`, which receives transaction processed callbacks for card integrations. You can omit it and use dashboard-configured processed callbacks instead; saved-card token callbacks are not sent to that per-payment URL, so configure the processed callback URL on the relevant Paymob dashboard integration if you use saved cards.
 
 ## Capture Payment

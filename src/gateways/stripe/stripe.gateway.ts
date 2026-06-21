@@ -1204,7 +1204,15 @@ export class StripeGateway extends BaseGateway {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Verify Stripe webhook signature
+   * Verify Stripe webhook signature.
+   *
+   * ⚠️ The `payload` MUST be the raw request body as a string or Buffer — the
+   * exact bytes Stripe sent. Stripe's signature is computed over the raw body,
+   * so a parsed/re-serialized JSON object will NOT verify. If you pass a parsed
+   * object this method returns false (and logs a warning via the configured
+   * logger) rather than throwing. In frameworks that auto-parse JSON, configure
+   * a raw-body parser for the webhook route (e.g. express.raw()).
+   *
    * @see https://stripe.com/docs/webhooks/signatures
    */
   verifyWebhook(

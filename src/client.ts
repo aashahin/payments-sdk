@@ -238,7 +238,11 @@ export class PaymentClient {
   ): Promise<WebhookEvent> {
     const gw = this.gateway(gateway);
 
-    // Notify hooks that webhook was received
+    // Notify hooks that a webhook was received.
+    // ⚠️ This fires on the UNVERIFIED payload (verification happens below), so
+    // onWebhookReceived must stay side-effect-free (logging/metrics only).
+    // State-changing logic belongs in onWebhookVerified, which only runs after
+    // verification succeeds.
     await this.hooksManager.runWebhookReceived(gateway, payload);
 
     // Verify webhook authenticity

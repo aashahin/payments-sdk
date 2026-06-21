@@ -39,7 +39,18 @@ export type RefundStatus = "pending" | "completed" | "failed";
  * Parameters for creating a new payment
  */
 export interface CreatePaymentParams {
-    /** Amount in base currency units (e.g., SAR, not halalas) */
+    /**
+     * Amount in base currency units (e.g., SAR, not halalas).
+     *
+     * ⚠️ This is a JavaScript floating-point `number`. Pass clean decimals with
+     * at most the precision your currency supports (e.g. `10.5`, `99.99`), not
+     * the result of float arithmetic like `0.1 + 0.2`. The SDK converts to the
+     * gateway's minor units, but float artifacts in the input can still cause
+     * rounding surprises. Store and compute money as integer minor units or a
+     * decimal type on your side, and only convert to a clean decimal here. A
+     * dedicated minor-units/decimal money type may be introduced in a future
+     * major version.
+     */
     amount: number;
     /** ISO 4217 currency code */
     currency: string;

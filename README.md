@@ -19,6 +19,7 @@ Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integra
 - **Core Concepts**
   - [Lifecycle Hooks](./docs/hooks.md)
   - [Webhook Handling](./docs/webhooks.md)
+  - [Logging & Redaction](./docs/logging.md)
   - [Custom Gateways](./docs/custom-gateways.md)
 
 ## Package Structure

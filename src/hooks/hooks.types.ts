@@ -89,6 +89,17 @@ export type ErrorHook = (
 /**
  * Webhook-specific hook signatures
  */
+
+/**
+ * Called the moment a webhook payload arrives, BEFORE signature verification.
+ *
+ * ⚠️ SECURITY: The payload here is UNVERIFIED and UNTRUSTED — anyone who can
+ * reach your webhook endpoint can trigger this hook with arbitrary data. Use it
+ * only for side-effect-free work such as request logging or metrics. Do NOT
+ * mutate state, fulfill orders, or trust any field. Put side-effect-sensitive
+ * logic in {@link WebhookVerifiedHook}, which only runs after verification
+ * succeeds.
+ */
 export type WebhookReceivedHook = (
     gateway: GatewayName,
     payload: unknown
@@ -167,9 +178,14 @@ export interface PaymentHooks {
     // Webhook hooks
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /** Called when a webhook is received (before verification) */
+    /**
+     * Called when a webhook is received, BEFORE verification.
+     * ⚠️ The payload is UNVERIFIED/UNTRUSTED — keep this side-effect-free
+     * (logging/metrics only). Put trusted, state-changing logic in
+     * {@link onWebhookVerified}.
+     */
     onWebhookReceived?: WebhookReceivedHook;
-    /** Called after webhook is verified and parsed */
+    /** Called after webhook is verified and parsed (payload is trusted here) */
     onWebhookVerified?: WebhookVerifiedHook;
     /** Called when webhook verification fails */
     onWebhookFailed?: WebhookFailedHook;
