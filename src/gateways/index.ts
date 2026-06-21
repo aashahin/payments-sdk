@@ -6,5 +6,3 @@ export { MoyasarGateway } from "./moyasar/moyasar.gateway";
 export { PayPalGateway } from "./paypal/paypal.gateway";
 export { PaymobGateway } from "./paymob/paymob.gateway";
 export { StripeGateway } from "./stripe/stripe.gateway";
-export { TabbyGateway } from "./tabby/tabby.gateway";
-export { TamaraGateway } from "./tamara/tamara.gateway";

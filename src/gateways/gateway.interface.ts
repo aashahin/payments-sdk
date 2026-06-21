@@ -61,8 +61,7 @@ export interface PaymentGateway {
 
     /**
      * Verify webhook signature/authenticity asynchronously.
-     * Required for gateways like PayPal that need API calls for verification,
-     * or Tamara that requires JWT cryptographic verification.
+     * Required for gateways like PayPal that need API calls for verification.
      * If not implemented, the SDK falls back to synchronous verifyWebhook.
      * 
      * @param payload - The raw webhook payload
@@ -97,7 +96,7 @@ export interface PaymentGateway {
 
     /**
      * Create a hosted checkout session.
-     * Implementation varies by gateway (Stripe, Tabby, Tamara, etc.)
+     * Implementation varies by gateway (Stripe, etc.)
      * Use gateway-specific methods for typed access.
      */
     createCheckoutSession?(params: unknown): Promise<unknown>;

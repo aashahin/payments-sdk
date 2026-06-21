@@ -134,32 +134,6 @@ export interface StripeConfig {
 }
 
 /**
- * Tabby gateway configuration
- */
-export interface TabbyConfig {
-    /** Secret API key */
-    secretKey: string;
-    /** Merchant code from Tabby dashboard */
-    merchantCode: string;
-    /** Use sandbox environment */
-    sandbox?: boolean;
-    /** Optional webhook auth header value for verification */
-    webhookAuthHeader?: string;
-}
-
-/**
- * Tamara gateway configuration
- */
-export interface TamaraConfig {
-    /** API Token for Bearer authorization */
-    apiToken: string;
-    /** Notification token for webhook JWT verification */
-    notificationToken?: string;
-    /** Use sandbox environment */
-    sandbox?: boolean;
-}
-
-/**
  * Base gateway configuration - generic record type
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -177,10 +151,6 @@ export interface PaymentClientConfig {
     paymob?: PaymobConfig;
     /** Stripe gateway configuration */
     stripe?: StripeConfig;
-    /** Tabby gateway configuration */
-    tabby?: TabbyConfig;
-    /** Tamara gateway configuration */
-    tamara?: TamaraConfig;
 
     /** Global lifecycle hooks */
     hooks?: PaymentHooks;

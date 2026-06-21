@@ -23,8 +23,6 @@ import { MoyasarGateway } from "./gateways/moyasar/moyasar.gateway";
 import { PayPalGateway } from "./gateways/paypal/paypal.gateway";
 import { PaymobGateway } from "./gateways/paymob/paymob.gateway";
 import { StripeGateway } from "./gateways/stripe/stripe.gateway";
-import { TabbyGateway } from "./gateways/tabby/tabby.gateway";
-import { TamaraGateway } from "./gateways/tamara/tamara.gateway";
 import { GatewayNotConfiguredError, InvalidWebhookError } from "./errors";
 
 /**
@@ -86,20 +84,6 @@ export class PaymentClient {
       this.gateways.set(
         "stripe",
         new StripeGateway(config.stripe, this.hooksManager),
-      );
-    }
-
-    if (config.tabby) {
-      this.gateways.set(
-        "tabby",
-        new TabbyGateway(config.tabby, this.hooksManager),
-      );
-    }
-
-    if (config.tamara) {
-      this.gateways.set(
-        "tamara",
-        new TamaraGateway(config.tamara, this.hooksManager),
       );
     }
   }

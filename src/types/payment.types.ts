@@ -8,7 +8,7 @@ import type {
 /**
  * Supported payment gateway names
  */
-export type GatewayName = "moyasar" | "paypal" | "paymob" | "stripe" | "tabby" | "tamara";
+export type GatewayName = "moyasar" | "paypal" | "paymob" | "stripe";
 
 /**
  * Unified payment status across all gateways

@@ -1,10 +1,10 @@
 # @abshahin/payments-sdk
 
-Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integrate Moyasar, PayPal, Paymob, Stripe, Tabby, Tamara and other payment gateways with type-safe lifecycle hooks and normalized webhooks.
+Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integrate Moyasar, PayPal, Paymob and Stripe payment gateways with type-safe lifecycle hooks and normalized webhooks.
 
 ## Features
 
-- 🔌 **Multi-Gateway Support**: Moyasar, PayPal, Paymob, Stripe, Tabby, Tamara
+- 🔌 **Multi-Gateway Support**: Moyasar, PayPal, Paymob, Stripe
 - 🪝 **Lifecycle Hooks**: Before, after, and error hooks for all operations
 - 🔒 **Type-Safe**: Full TypeScript support with strict types
 - 🌐 **Framework-Agnostic**: Works with Elysia, Express, Hono, or vanilla
@@ -16,8 +16,6 @@ Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integra
   - [PayPal](./docs/paypal.md)
   - [Paymob](./docs/paymob.md)
   - [Stripe](./docs/stripe.md)
-  - [Tabby](./docs/tabby.md)
-  - [Tamara](./docs/tamara.md)
 - **Core Concepts**
   - [Lifecycle Hooks](./docs/hooks.md)
   - [Webhook Handling](./docs/webhooks.md)
@@ -99,16 +97,6 @@ const client = new PaymentClient({
     secretKey: 'sk_...',
     publishableKey: 'pk_...',
     webhookSecret: 'whsec_...',
-  },
-  tabby: {
-    secretKey: 'sk_...',
-    merchantCode: 'your_merchant_code',
-    sandbox: true,
-  },
-  tamara: {
-    apiToken: 'your_api_token',
-    notificationToken: 'your_notification_token',
-    sandbox: true,
   },
   defaultGateway: 'moyasar',
 });
