@@ -109,6 +109,9 @@ export class AuthenticationError extends PaymentError {
  * Thrown when the gateway rate limit is exceeded
  */
 export class RateLimitError extends PaymentError {
+    /** Seconds to wait before retrying, parsed from the Retry-After header when present. */
+    public readonly retryAfterSeconds?: number;
+
     constructor(gatewayName: string, retryAfter?: number) {
         super(
             `Rate limit exceeded for ${gatewayName}${retryAfter ? `. Retry after ${retryAfter}s` : ''}`,
@@ -116,6 +119,9 @@ export class RateLimitError extends PaymentError {
             429
         );
         this.name = 'RateLimitError';
+        if (retryAfter !== undefined) {
+            this.retryAfterSeconds = retryAfter;
+        }
     }
 }
 

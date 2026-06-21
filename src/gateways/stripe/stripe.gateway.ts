@@ -26,7 +26,17 @@ import {
   InvalidRequestError,
   NetworkError,
 } from "../../errors";
+import { withRetry } from "../../utils/retry";
+import type { Logger } from "../../utils/logger";
 import { createHmac, timingSafeEqual } from "node:crypto";
+
+/**
+ * Stripe maps transient failures to NetworkError (timeouts, connection errors,
+ * 5xx) and RateLimitError (429). Both are safe to retry.
+ */
+function isStripeRetryableError(error: unknown): boolean {
+  return error instanceof NetworkError || error instanceof RateLimitError;
+}
 import {
   CreatePaymentParamsSchema,
   CaptureParamsSchema,
@@ -692,8 +702,8 @@ export class StripeGateway extends BaseGateway {
     return "https://api.stripe.com/v1";
   }
 
-  constructor(config: StripeConfig, hooks: HooksManager) {
-    super(config, hooks);
+  constructor(config: StripeConfig, hooks: HooksManager, logger?: Logger) {
+    super(config, hooks, logger);
     this.stripeConfig = config;
   }
 
@@ -1203,7 +1213,7 @@ export class StripeGateway extends BaseGateway {
     headers?: Record<string, string>,
   ): boolean {
     if (!this.stripeConfig.webhookSecret) {
-      console.warn(
+      this.logger.warn(
         "[Stripe] Webhook verification failed: webhookSecret not configured",
       );
       return false;
@@ -1211,7 +1221,7 @@ export class StripeGateway extends BaseGateway {
 
     const sigHeader = signature || stripeHeader(headers, "stripe-signature");
     if (!sigHeader) {
-      console.warn("[Stripe] Missing stripe-signature header");
+      this.logger.warn("[Stripe] Missing stripe-signature header");
       return false;
     }
 
@@ -1229,7 +1239,7 @@ export class StripeGateway extends BaseGateway {
     }
 
     if (!timestamp || signatures.length === 0) {
-      console.warn("[Stripe] Invalid signature header format");
+      this.logger.warn("[Stripe] Invalid signature header format");
       return false;
     }
 
@@ -1237,7 +1247,7 @@ export class StripeGateway extends BaseGateway {
     const eventTime = parseInt(timestamp, 10);
     const now = Math.floor(Date.now() / 1000);
     if (!Number.isFinite(eventTime) || Math.abs(now - eventTime) > 300) {
-      console.warn("[Stripe] Webhook signature timestamp too old");
+      this.logger.warn("[Stripe] Webhook signature timestamp too old");
       return false;
     }
 
@@ -1250,7 +1260,7 @@ export class StripeGateway extends BaseGateway {
         payload,
       ]);
     } else {
-      console.warn(
+      this.logger.warn(
         "[Stripe] Webhook verification requires the raw request body",
       );
       return false;
@@ -1493,6 +1503,23 @@ export class StripeGateway extends BaseGateway {
   ): Promise<T> {
     validateStripeIdempotencyKey(idempotencyKey);
 
+    // Safe to retry GET/HEAD always; retry mutations only when an idempotency
+    // key is present so Stripe deduplicates a re-sent request.
+    const retryableRequest =
+      method === "GET" || method === "HEAD" || idempotencyKey !== undefined;
+
+    return withRetry(
+      () => this.stripeRequestOnce<T>(method, endpoint, body, idempotencyKey),
+      { isRetryable: retryableRequest ? isStripeRetryableError : () => false },
+    );
+  }
+
+  private async stripeRequestOnce<T>(
+    method: string,
+    endpoint: string,
+    body?: Record<string, any>,
+    idempotencyKey?: string,
+  ): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.stripeConfig.secretKey}`,
       "Content-Type": "application/x-www-form-urlencoded",

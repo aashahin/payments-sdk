@@ -35,7 +35,7 @@ import { GatewayNotConfiguredError, InvalidWebhookError } from "./errors";
  *   defaultGateway: 'moyasar',
  *   hooks: {
  *     beforeCreatePayment: async (ctx) => {
- *       console.log('Creating payment:', ctx.params);
+ *       // inspect or mutate ctx.params here
  *       return { proceed: true };
  *     },
  *   },
@@ -58,32 +58,34 @@ export class PaymentClient {
     this.hooksManager = new HooksManager(config.hooks);
     this.defaultGateway = config.defaultGateway;
 
+    const logger = config.logger;
+
     // Initialize configured gateways
     if (config.moyasar) {
       this.gateways.set(
         "moyasar",
-        new MoyasarGateway(config.moyasar, this.hooksManager),
+        new MoyasarGateway(config.moyasar, this.hooksManager, logger),
       );
     }
 
     if (config.paypal) {
       this.gateways.set(
         "paypal",
-        new PayPalGateway(config.paypal, this.hooksManager),
+        new PayPalGateway(config.paypal, this.hooksManager, logger),
       );
     }
 
     if (config.paymob) {
       this.gateways.set(
         "paymob",
-        new PaymobGateway(config.paymob, this.hooksManager),
+        new PaymobGateway(config.paymob, this.hooksManager, logger),
       );
     }
 
     if (config.stripe) {
       this.gateways.set(
         "stripe",
-        new StripeGateway(config.stripe, this.hooksManager),
+        new StripeGateway(config.stripe, this.hooksManager, logger),
       );
     }
   }

@@ -2,6 +2,8 @@
 
 import type { GatewayName } from './payment.types';
 import type { PaymentHooks } from '../hooks/hooks.types';
+import type { IdempotencyStore } from '../utils/idempotency';
+import type { Logger } from '../utils/logger';
 
 /**
  * Moyasar gateway configuration
@@ -17,6 +19,14 @@ export interface MoyasarConfig {
     webhookSecret?: string;
     /** Request timeout in milliseconds. Default: 30000 */
     timeoutMs?: number;
+    /**
+     * Optional injectable idempotency store for refund/capture/void. Moyasar's
+     * API has no native idempotency for these endpoints, so without a store a
+     * retried refund can refund the customer twice. Provide a process-wide
+     * store (Redis/SQL, ideally with an atomic `reserve`) for full protection;
+     * an in-memory store only dedupes within a single process.
+     */
+    idempotencyStore?: IdempotencyStore;
 }
 
 /**
@@ -157,4 +167,11 @@ export interface PaymentClientConfig {
 
     /** Default gateway to use when not specified */
     defaultGateway?: GatewayName;
+
+    /**
+     * Optional logger. All gateway logging is routed through this and secrets/PII
+     * are redacted before being passed to it. Defaults to a no-op (the SDK is
+     * silent unless a logger is provided).
+     */
+    logger?: Logger;
 }

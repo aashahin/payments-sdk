@@ -31,6 +31,8 @@ import {
   NetworkError,
   ResourceNotFoundError,
 } from "../../errors";
+import { withRetry as withRetryShared } from "../../utils/retry";
+import type { Logger } from "../../utils/logger";
 
 type PayPalRefundStatus = "pending" | "completed" | "failed";
 
@@ -148,12 +150,6 @@ interface PayPalWebhookVerifyResponse {
 // Retry Configuration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const RETRY_CONFIG = {
-  maxAttempts: 3,
-  baseDelayMs: 500,
-  maxDelayMs: 5000,
-} as const;
-
 const PAYPAL_ZERO_DECIMAL_CURRENCIES = new Set(["HUF", "JPY", "TWD"]);
 const MONEY_EPSILON = 1e-9;
 const PAYPAL_ORDER_REQUEST_ID_MAX_LENGTH = 108;
@@ -179,41 +175,18 @@ const PAYPAL_WEBHOOK_EVENTS_WITHOUT_RESOURCE_STATUS = new Set([
 ]);
 
 /**
- * Retry with exponential backoff
+ * Retry with exponential backoff.
+ *
+ * Thin adapter over the shared {@link withRetryShared} helper, preserving
+ * PayPal's original call signature. The shared helper's default backoff already
+ * honors `retryAfterSeconds` on the error (PayPalApiError exposes it), so 429
+ * Retry-After values are respected.
  */
-async function withRetry<T>(
+function withRetry<T>(
   operation: () => Promise<T>,
   isRetryable: (error: unknown) => boolean = () => false,
 ): Promise<T> {
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < RETRY_CONFIG.maxAttempts; attempt++) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-
-      if (!isRetryable(error) || attempt === RETRY_CONFIG.maxAttempts - 1) {
-        throw error;
-      }
-
-      const delay = getRetryDelayMs(error, attempt);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-
-  throw lastError;
-}
-
-function getRetryDelayMs(error: unknown, attempt: number): number {
-  if (error instanceof PayPalApiError && error.retryAfterSeconds !== undefined) {
-    return Math.min(error.retryAfterSeconds * 1000, RETRY_CONFIG.maxDelayMs);
-  }
-
-  return Math.min(
-    RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
-    RETRY_CONFIG.maxDelayMs,
-  );
+  return withRetryShared(operation, { isRetryable });
 }
 
 /**
@@ -265,8 +238,8 @@ export class PayPalGateway extends BaseGateway {
       : "https://api-m.paypal.com";
   }
 
-  constructor(config: PayPalConfig, hooks: HooksManager) {
-    super(config, hooks);
+  constructor(config: PayPalConfig, hooks: HooksManager, logger?: Logger) {
+    super(config, hooks, logger);
     if (
       config.webhookId !== undefined &&
       !PayPalGateway.isValidWebhookId(config.webhookId)
@@ -724,7 +697,7 @@ export class PayPalGateway extends BaseGateway {
     headers?: Record<string, string>,
   ): boolean {
     if (!this.paypalConfig.webhookId) {
-      console.warn(
+      this.logger.warn(
         "[PayPal] Webhook verification failed: webhookId not configured",
       );
       return false;
@@ -750,7 +723,7 @@ export class PayPalGateway extends BaseGateway {
       !certUrl ||
       !authAlgo
     ) {
-      console.warn(
+      this.logger.warn(
         "[PayPal] Webhook verification failed: missing required headers",
       );
       return false;
@@ -763,13 +736,13 @@ export class PayPalGateway extends BaseGateway {
       transmissionSig,
       transmissionTime,
     })) {
-      console.warn(
+      this.logger.warn(
         "[PayPal] Webhook verification failed: invalid webhook header values",
       );
       return false;
     }
 
-    console.warn(
+    this.logger.warn(
       "[PayPal] Synchronous verification not supported. Use verifyWebhookAsync for proper verification.",
     );
     return false;
@@ -785,7 +758,7 @@ export class PayPalGateway extends BaseGateway {
     headers?: Record<string, string>,
   ): Promise<boolean> {
     if (!this.paypalConfig.webhookId) {
-      console.warn(
+      this.logger.warn(
         "[PayPal] Webhook verification failed: webhookId not configured",
       );
       return false;
@@ -810,7 +783,7 @@ export class PayPalGateway extends BaseGateway {
       !certUrl ||
       !authAlgo
     ) {
-      console.warn("[PayPal] Missing required webhook headers");
+      this.logger.warn("[PayPal] Missing required webhook headers");
       return false;
     }
 
@@ -821,7 +794,7 @@ export class PayPalGateway extends BaseGateway {
       transmissionSig,
       transmissionTime,
     })) {
-      console.warn("[PayPal] Invalid webhook header values");
+      this.logger.warn("[PayPal] Invalid webhook header values");
       return false;
     }
 

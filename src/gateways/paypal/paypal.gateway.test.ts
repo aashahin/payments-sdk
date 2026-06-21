@@ -17,6 +17,17 @@ import {
 import type { PayPalConfig } from '../../types/config.types';
 import type { CreatePaymentParams } from '../../types/payment.types';
 import type { HookContext } from '../../hooks/hooks.types';
+import type { Logger } from '../../utils/logger';
+
+/** Logger that records warn/error messages for assertions. */
+function captureLogger(sink: string[]): Logger {
+    return {
+        debug: () => {},
+        info: () => {},
+        warn: (message: string) => { sink.push(message); },
+        error: (message: string) => { sink.push(message); },
+    };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test Configuration
@@ -136,16 +147,17 @@ describe('PayPalGateway', () => {
 
     describe('verifyWebhook', () => {
         it('should warn and return false when webhookId is not configured', () => {
+            const warnings: string[] = [];
             const gatewayNoWebhookId = new PayPalGateway(
                 { clientId: 'test', clientSecret: 'test' },
-                hooksManager
+                hooksManager,
+                captureLogger(warnings),
             );
 
-            const warnSpy = spyOn(console, 'warn');
             const result = gatewayNoWebhookId.verifyWebhook({}, undefined, {});
 
             expect(result).toBe(false);
-            expect(warnSpy).toHaveBeenCalled();
+            expect(warnings.length).toBeGreaterThan(0);
         });
 
         it('should return false when required headers are missing', () => {
@@ -154,8 +166,13 @@ describe('PayPalGateway', () => {
         });
 
         it('should return false with warning for sync verification (requires async)', () => {
-            const warnSpy = spyOn(console, 'warn');
-            const result = gateway.verifyWebhook(
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+            const result = warnGateway.verifyWebhook(
                 { id: 'test' },
                 'sig',
                 {
@@ -168,9 +185,7 @@ describe('PayPalGateway', () => {
             );
 
             expect(result).toBe(false);
-            expect(warnSpy).toHaveBeenCalledWith(
-                expect.stringContaining('verifyWebhookAsync')
-            );
+            expect(warnings.some((message) => message.includes('verifyWebhookAsync'))).toBe(true);
         });
     });
 
