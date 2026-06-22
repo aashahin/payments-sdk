@@ -448,7 +448,7 @@ describe("StripeGateway", () => {
       });
 
       expect(event.amount).toBe(500);
-      expect(event.currency).toBe("jpy");
+      expect(event.currency).toBe("JPY");
     });
 
     it("should use related PaymentIntent for charge refund events", () => {

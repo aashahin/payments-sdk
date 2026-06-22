@@ -104,6 +104,26 @@ describe("redact", () => {
     redact(input);
     expect(input.token).toBe("tok_123");
   });
+
+  it("keeps safe operational keys while still redacting PII name fields", () => {
+    const out = redact({
+      gateway: "stripe",
+      gatewayName: "stripe",
+      operationName: "createPayment",
+      eventType: "payment_intent.succeeded",
+      firstName: "Jane",
+      lastName: "Doe",
+      cardNumber: "4242424242424242",
+    }) as Record<string, unknown>;
+
+    expect(out.gateway).toBe("stripe");
+    expect(out.gatewayName).toBe("stripe");
+    expect(out.operationName).toBe("createPayment");
+    expect(out.eventType).toBe("payment_intent.succeeded");
+    expect(out.firstName).toBe("[REDACTED]");
+    expect(out.lastName).toBe("[REDACTED]");
+    expect(out.cardNumber).toBe("[REDACTED]");
+  });
 });
 
 describe("createRedactingLogger", () => {
@@ -143,6 +163,17 @@ describe("InMemoryIdempotencyStore", () => {
     const start = Date.now();
     while (Date.now() - start < 5) { /* busy wait */ }
     expect(store.get("k")).toBeUndefined();
+  });
+
+  it("caps the number of stored entries to avoid unbounded growth", () => {
+    const store = new InMemoryIdempotencyStore(60_000, 100);
+    for (let i = 0; i < 1000; i++) {
+      store.set(`k${i}`, { status: "completed", fingerprint: "fp", createdAt: Date.now() });
+    }
+    expect(store.size).toBeLessThanOrEqual(100);
+    // The most recently written key survives; the oldest are evicted first.
+    expect(store.get("k999")).toBeDefined();
+    expect(store.get("k0")).toBeUndefined();
   });
 });
 

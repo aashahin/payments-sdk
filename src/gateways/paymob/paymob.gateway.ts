@@ -38,7 +38,11 @@ import {
   RateLimitError,
   ResourceNotFoundError,
 } from "../../errors";
-import { withRetry, parseRetryAfterSeconds } from "../../utils/retry";
+import {
+  withRetry,
+  parseRetryAfterSeconds,
+  extractRetryAfterSeconds,
+} from "../../utils/retry";
 import type { Logger } from "../../utils/logger";
 
 /**
@@ -837,7 +841,7 @@ export class PaymobGateway extends BaseGateway {
         return new ResourceNotFoundError(message, error.rawError);
       }
       if (status === 429) {
-        return new RateLimitError("paymob");
+        return new RateLimitError("paymob", extractRetryAfterSeconds(error));
       }
     }
     return super.mapError(error);
@@ -960,7 +964,8 @@ export class PaymobGateway extends BaseGateway {
       gatewayPaymentId: String(obj.id),
       status: this.mapTransactionStatus(obj),
       amount: this.fromMinorUnits(obj.amount_cents, obj.currency),
-      currency: obj.currency,
+      // Normalize to uppercase ISO 4217 for cross-gateway consistency.
+      currency: obj.currency.toUpperCase(),
       timestamp: this.parseTimestamp(obj.created_at),
       rawPayload: raw,
     };
@@ -1007,7 +1012,8 @@ export class PaymobGateway extends BaseGateway {
       gatewayPaymentId: String(payload.id),
       status: this.mapTransactionStatus(statusData),
       amount: this.fromMinorUnits(amountCents, payload.currency),
-      currency: payload.currency,
+      // Normalize to uppercase ISO 4217 for cross-gateway consistency.
+      currency: payload.currency.toUpperCase(),
       timestamp: this.parseTimestamp(payload.created_at),
       rawPayload,
     };

@@ -4,6 +4,7 @@ import {
   InvalidRequestError,
   InvalidWebhookError,
   NetworkError,
+  RateLimitError,
   ResourceNotFoundError,
 } from "../../errors";
 import type { PaymentHooks } from "../../hooks/hooks.types";
@@ -1075,6 +1076,84 @@ describe("MoyasarGateway", () => {
       ).rejects.toBeTruthy();
       // No idempotency key => no retry => exactly one call.
       expect(fetchCalls).toHaveLength(1);
+    });
+  });
+
+  describe("rate limiting", () => {
+    it("preserves Retry-After seconds when mapping 429 to RateLimitError", async () => {
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            type: "rate_limit_error",
+            message: "Too many requests",
+          }),
+          {
+            status: 429,
+            headers: {
+              "Content-Type": "application/json",
+              "retry-after": "30",
+            },
+          },
+        )) as typeof fetch;
+
+      const gateway = createGateway();
+      let caught: unknown;
+      try {
+        // No idempotencyKey => no retry => fast, single attempt.
+        await gateway.createPayment({
+          amount: 100,
+          currency: "SAR",
+          callbackUrl: "https://example.com/callback",
+          moyasarSource: { type: "token", token: "token_abc" },
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(RateLimitError);
+      expect((caught as RateLimitError).retryAfterSeconds).toBe(30);
+    });
+  });
+
+  describe("idempotency store safety", () => {
+    const captureWarnings = () => {
+      const warnings: string[] = [];
+      const logger = {
+        debug() {},
+        info() {},
+        warn: (message: string) => warnings.push(message),
+        error() {},
+      };
+      return { warnings, logger };
+    };
+
+    it("warns when the idempotency store lacks atomic reserve()", () => {
+      const { warnings, logger } = captureWarnings();
+      const storeWithoutReserve = {
+        get: async () => undefined,
+        set: async () => {},
+        delete: async () => {},
+      };
+
+      new MoyasarGateway(
+        { ...CONFIG, idempotencyStore: storeWithoutReserve },
+        new HooksManager(),
+        logger,
+      );
+
+      expect(warnings.some((w) => w.includes("atomic reserve"))).toBe(true);
+    });
+
+    it("does not warn when the store implements reserve()", () => {
+      const { warnings, logger } = captureWarnings();
+
+      new MoyasarGateway(
+        { ...CONFIG, idempotencyStore: new InMemoryIdempotencyStore() },
+        new HooksManager(),
+        logger,
+      );
+
+      expect(warnings.some((w) => w.includes("atomic reserve"))).toBe(false);
     });
   });
 });
