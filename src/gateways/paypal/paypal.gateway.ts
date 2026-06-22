@@ -905,7 +905,8 @@ export class PayPalGateway extends BaseGateway {
 
     if (webhookAmount) {
       event.amount = amount;
-      event.currency = webhookAmount.currency_code;
+      // Normalize to uppercase ISO 4217 for cross-gateway consistency.
+      event.currency = webhookAmount.currency_code.toUpperCase();
     }
 
     return event;
@@ -1190,7 +1191,8 @@ export class PayPalGateway extends BaseGateway {
     }
 
     this.accessToken = data.access_token;
-    // Token expires in `expires_in` seconds, refresh 5 minutes early
+    // Refresh early to avoid using a token that expires mid-request: up to 5
+    // minutes early, or half the lifetime for short-lived tokens.
     const refreshSkewSeconds = Math.min(300, Math.floor(data.expires_in / 2));
     this.tokenExpiry = new Date(
       Date.now() + (data.expires_in - refreshSkewSeconds) * 1000,

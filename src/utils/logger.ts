@@ -57,11 +57,31 @@ const SENSITIVE_KEY_PATTERNS = [
   "given_id",
 ];
 
+/**
+ * Operational identifiers that are never sensitive but would otherwise be
+ * caught by the broad substring patterns above (e.g. `gatewayName` matches
+ * "name"). Allow-listing them keeps diagnostic logs useful without weakening
+ * redaction of genuinely sensitive fields like `firstName`/`cardNumber`.
+ */
+const SAFE_KEY_ALLOWLIST = new Set([
+  "gateway",
+  "gatewayname",
+  "operation",
+  "operationname",
+  "event",
+  "eventname",
+  "eventtype",
+  "status",
+]);
+
 const REDACTED = "[REDACTED]";
 const MAX_DEPTH = 6;
 
 function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase();
+  if (SAFE_KEY_ALLOWLIST.has(lower)) {
+    return false;
+  }
   return SENSITIVE_KEY_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 

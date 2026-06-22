@@ -1454,7 +1454,9 @@ export class StripeGateway extends BaseGateway {
       livemode: raw.livemode === true,
       apiVersion: raw.api_version ?? undefined,
       amount,
-      currency,
+      // Normalize to uppercase ISO 4217 for cross-gateway consistency
+      // (Stripe reports currency in lowercase).
+      currency: currency.toUpperCase(),
       timestamp: new Date(raw.created * 1000),
       rawPayload: raw,
     };

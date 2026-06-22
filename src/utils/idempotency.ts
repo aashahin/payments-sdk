@@ -42,11 +42,20 @@ export interface IdempotencyStore {
 }
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const DEFAULT_MAX_ENTRIES = 10_000;
 
 /**
- * Simple in-memory idempotency store with TTL eviction. Suitable for a single
- * long-lived process; provide a shared store (Redis/SQL) for multi-worker or
- * serverless deployments.
+ * Simple in-memory idempotency store with TTL eviction and a bounded size.
+ * Suitable for a single long-lived process; provide a shared store (Redis/SQL)
+ * for multi-worker or serverless deployments.
+ *
+ * Memory is capped at `maxEntries`. Expired entries are evicted lazily on
+ * read, and when the store reaches capacity a write first prunes expired
+ * entries and then, if still full, evicts the oldest entry (insertion order).
+ * This prevents unbounded growth under high request volume where keys are
+ * written once and never read again. Under sustained pressure beyond
+ * `maxEntries`, the oldest in-progress guards may be evicted, so size the cap
+ * for your throughput or use a shared store for strict guarantees.
  */
 export class InMemoryIdempotencyStore implements IdempotencyStore {
   private readonly entries = new Map<
@@ -54,7 +63,10 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     { record: IdempotencyRecord; expiresAt: number }
   >();
 
-  constructor(private readonly ttlMs: number = DEFAULT_TTL_MS) {}
+  constructor(
+    private readonly ttlMs: number = DEFAULT_TTL_MS,
+    private readonly maxEntries: number = DEFAULT_MAX_ENTRIES,
+  ) {}
 
   get(key: string): IdempotencyRecord | undefined {
     const entry = this.entries.get(key);
@@ -69,6 +81,14 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
   }
 
   set(key: string, record: IdempotencyRecord): void {
+    // Only do the O(n) prune/evict work when at capacity for a new key, so the
+    // common path (updating an existing key or writing below the cap) stays O(1).
+    if (!this.entries.has(key) && this.entries.size >= this.maxEntries) {
+      this.pruneExpired();
+      if (this.entries.size >= this.maxEntries) {
+        this.evictOldest();
+      }
+    }
     this.entries.set(key, { record, expiresAt: Date.now() + this.ttlMs });
   }
 
@@ -83,6 +103,27 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     }
     this.set(key, record);
     return undefined;
+  }
+
+  /** Number of live (not yet evicted) entries. Exposed for diagnostics/tests. */
+  get size(): number {
+    return this.entries.size;
+  }
+
+  private pruneExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAt <= now) {
+        this.entries.delete(key);
+      }
+    }
+  }
+
+  private evictOldest(): void {
+    const oldest = this.entries.keys().next().value;
+    if (oldest !== undefined) {
+      this.entries.delete(oldest);
+    }
   }
 }
 

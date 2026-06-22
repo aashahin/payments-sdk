@@ -39,7 +39,11 @@ import {
   InvalidWebhookError,
   ResourceNotFoundError,
 } from "../../errors";
-import { withRetry, parseRetryAfterSeconds } from "../../utils/retry";
+import {
+  withRetry,
+  parseRetryAfterSeconds,
+  extractRetryAfterSeconds,
+} from "../../utils/retry";
 import {
   type IdempotencyStore,
   fingerprintParams,
@@ -238,6 +242,27 @@ export class MoyasarGateway extends BaseGateway {
   constructor(config: MoyasarConfig, hooks: HooksManager, logger?: Logger) {
     super(config, hooks, logger);
     this.moyasarConfig = config;
+    this.warnIfIdempotencyStoreUnsafe();
+  }
+
+  /**
+   * Moyasar's refund/capture/void endpoints have no native idempotency, so the
+   * SDK guards them with the injectable store. That guard is only race-safe with
+   * an atomic `reserve()` (Redis `SET NX`, a SQL unique constraint, etc.).
+   * A store without `reserve()` falls back to a non-atomic get-then-set, which
+   * two concurrent retries of the same mutation can both pass — risking a double
+   * refund. Warn loudly so this isn't relied on for cross-worker safety.
+   */
+  private warnIfIdempotencyStoreUnsafe(): void {
+    const store = this.moyasarConfig.idempotencyStore;
+    if (store && !store.reserve) {
+      this.logger.warn(
+        "[Moyasar] idempotencyStore does not implement atomic reserve(). " +
+          "Concurrent retries of the same refund/capture/void can race and apply " +
+          "the mutation twice. Provide a store with an atomic reserve() " +
+          "(e.g. Redis SET NX or a SQL unique constraint) for cross-worker safety.",
+      );
+    }
   }
 
   /**
@@ -816,7 +841,7 @@ export class MoyasarGateway extends BaseGateway {
         case "authorization_error":
           return new AuthenticationError(message);
         case "rate_limit_error":
-          return new RateLimitError("moyasar");
+          return new RateLimitError("moyasar", extractRetryAfterSeconds(error));
         case "api_connection_error":
           return new NetworkError(message);
         case "record_not_found":
@@ -832,7 +857,7 @@ export class MoyasarGateway extends BaseGateway {
         return new AuthenticationError(message);
       }
       if (status === 429) {
-        return new RateLimitError("moyasar");
+        return new RateLimitError("moyasar", extractRetryAfterSeconds(error));
       }
       if (status === 404) {
         return new ResourceNotFoundError(message, raw);
@@ -883,7 +908,8 @@ export class MoyasarGateway extends BaseGateway {
       gatewayPaymentId: raw.data.id,
       status: this.mapStatus(raw.data.status),
       amount: this.fromMinorUnits(raw.data.amount, raw.data.currency),
-      currency: raw.data.currency,
+      // Normalize to uppercase ISO 4217 for cross-gateway consistency.
+      currency: raw.data.currency.toUpperCase(),
       timestamp: new Date(raw.created_at),
       rawPayload: raw,
     };

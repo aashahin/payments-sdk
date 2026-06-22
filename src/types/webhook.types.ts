@@ -28,7 +28,10 @@ export interface WebhookEvent {
     apiVersion?: string | undefined;
     /** Amount in base currency units, when the gateway event includes money details */
     amount?: number | undefined;
-    /** Currency code, when the gateway event includes money details */
+    /**
+     * Currency code, when the gateway event includes money details.
+     * Normalized to uppercase ISO 4217 across all gateways for consistency.
+     */
     currency?: string | undefined;
     /** When the event occurred */
     timestamp: Date;

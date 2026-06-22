@@ -71,7 +71,15 @@ export type BeforeHook<T = unknown> = (
 ) => Promise<BeforeHookResult<T>> | BeforeHookResult<T>;
 
 /**
- * After hook function signature
+ * After hook function signature.
+ *
+ * ⚠️ An after hook runs AFTER the gateway operation has already executed and
+ * succeeded. Returning `proceed: false` makes the SDK throw a
+ * `PaymentAbortedError`, but it does NOT roll back the side effect — for a
+ * mutation (capture/refund/void) the money has already moved at the gateway
+ * (and, for guarded gateways, the idempotency record is already marked
+ * completed). Use after hooks to inspect or transform the result via
+ * `modifiedResult`; do not use them to "cancel" a committed operation.
  */
 export type AfterHook<T = unknown, R = unknown> = (
     ctx: HookContext<T>,
