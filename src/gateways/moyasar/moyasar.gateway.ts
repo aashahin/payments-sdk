@@ -49,6 +49,7 @@ import {
   fingerprintParams,
 } from "../../utils/idempotency";
 import type { Logger } from "../../utils/logger";
+import { getCurrencyExponent } from "../../utils/currency";
 
 /**
  * Moyasar has no native idempotency for capture/refund/void, so transient
@@ -104,35 +105,6 @@ type MoyasarSourceType =
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MOYASAR_MAX_METADATA_VALUE_LENGTH = 500;
-
-const ZERO_DECIMAL_CURRENCIES = new Set([
-  "BIF",
-  "CLP",
-  "DJF",
-  "GNF",
-  "JPY",
-  "KMF",
-  "KRW",
-  "MGA",
-  "PYG",
-  "RWF",
-  "UGX",
-  "VND",
-  "VUV",
-  "XAF",
-  "XOF",
-  "XPF",
-]);
-
-const THREE_DECIMAL_CURRENCIES = new Set([
-  "BHD",
-  "IQD",
-  "JOD",
-  "KWD",
-  "LYD",
-  "OMR",
-  "TND",
-]);
 
 /**
  * Full Moyasar payment response matching official OpenAPI spec
@@ -1007,7 +979,7 @@ export class MoyasarGateway extends BaseGateway {
   }
 
   private toMinorUnits(amount: number, currency: string): number {
-    const exponent = this.getCurrencyExponent(currency);
+    const exponent = getCurrencyExponent(currency);
     const minorAmount = amount * 10 ** exponent;
     const roundedMinorAmount = Math.round(minorAmount);
 
@@ -1033,19 +1005,8 @@ export class MoyasarGateway extends BaseGateway {
   }
 
   private fromMinorUnits(amount: number, currency: string): number {
-    const exponent = this.getCurrencyExponent(currency);
+    const exponent = getCurrencyExponent(currency);
     return amount / 10 ** exponent;
-  }
-
-  private getCurrencyExponent(currency: string): number {
-    const normalizedCurrency = currency.toUpperCase();
-    if (ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency)) {
-      return 0;
-    }
-    if (THREE_DECIMAL_CURRENCIES.has(normalizedCurrency)) {
-      return 3;
-    }
-    return 2;
   }
 
   private constantTimeEquals(left: string, right: string): boolean {

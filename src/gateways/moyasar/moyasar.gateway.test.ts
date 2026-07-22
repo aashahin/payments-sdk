@@ -850,6 +850,24 @@ describe("MoyasarGateway", () => {
       expect(gateway.verifyWebhook(null)).toBe(false);
     });
 
+    it.each([
+      // Same length as "webhook_secret" (14 chars) but different content
+      ["an equal-length token with different content", "webhook_secreX"],
+      // Longer than the configured secret (length-guard padded comparison)
+      ["a token longer than the configured secret", "webhook_secret_extra"],
+      // Shorter / empty tokens
+      ["a shorter token", "webhook"],
+      ["an empty token", ""],
+    ])("rejects %s timing-safely", (_label, secretToken) => {
+      expect(createGateway().verifyWebhook({ secret_token: secretToken })).toBe(
+        false,
+      );
+    });
+
+    it("rejects non-string tokens timing-safely", () => {
+      expect(createGateway().verifyWebhook({ secret_token: 123 })).toBe(false);
+    });
+
     it("rejects malformed webhook payloads during parsing", () => {
       expect(() => createGateway().parseWebhookEvent({})).toThrow(
         InvalidWebhookError,

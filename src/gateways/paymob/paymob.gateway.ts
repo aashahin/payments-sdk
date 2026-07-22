@@ -44,6 +44,7 @@ import {
   extractRetryAfterSeconds,
 } from "../../utils/retry";
 import type { Logger } from "../../utils/logger";
+import { getCurrencyExponent } from "../../utils/currency";
 
 /**
  * Retryable transient errors for safe (idempotent) Paymob requests: network
@@ -1729,14 +1730,7 @@ export class PaymobGateway extends BaseGateway {
   }
 
   private currencyFractionDigits(currency: string): number {
-    try {
-      return new Intl.NumberFormat("en", {
-        style: "currency",
-        currency: currency.toUpperCase(),
-      }).resolvedOptions().maximumFractionDigits ?? 2;
-    } catch {
-      return 2;
-    }
+    return getCurrencyExponent(currency);
   }
 
   private async parseJson<T>(response: Response): Promise<T> {
