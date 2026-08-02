@@ -126,15 +126,20 @@ export interface SamsungPaySource {
 /**
  * STC Pay mobile wallet payment source.
  * Customer receives OTP on their registered mobile number.
+ *
+ * Manual / authorize-only capture is not supported: `capture: false` or
+ * `manualCapture` on create is rejected with InvalidRequestError.
  */
 export interface StcPaySource {
     type: "stcpay";
     /**
      * Saudi Arabian mobile number in one of these formats:
-     * - 05xxxxxxxx
-     * - +9665xxxxxxxx
+     * - 05xxxxxxxx (local)
+     * - +9665xxxxxxxx (E.164)
      * - 009665xxxxxxxx
      * - 9665xxxxxxxx
+     *
+     * Passed through to Moyasar as-is; the SDK does not reformat.
      */
     mobile: string;
     /** Cashier identifier (shown in Moyasar dashboard) */

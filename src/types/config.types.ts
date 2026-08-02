@@ -11,9 +11,16 @@ import type { Logger } from '../utils/logger';
 export interface MoyasarConfig {
     /** Secret API key */
     secretKey: string;
-    /** Publishable key (for client-side tokenization reference) */
+    /**
+     * Publishable key — client-side only (e.g. Moyasar.js tokenization).
+     * Not used by this SDK backend.
+     */
     publishableKey?: string;
-    /** Use sandbox environment */
+    /**
+     * @deprecated Ignored. Moyasar test vs live is determined solely by the
+     * secret key prefix (`sk_test_…` vs `sk_live_…`), not a sandbox flag.
+     * Kept only for config-shape compatibility with other gateways.
+     */
     sandbox?: boolean;
     /** Webhook secret for verification */
     webhookSecret?: string;
@@ -46,7 +53,11 @@ export interface PayPalConfig {
 }
 
 /**
- * Paymob region identifiers
+ * Paymob region identifiers.
+ * - `ksa`, `eg`, `om`, `ae` — supported official regional hosts
+ * - `pk` — **experimental / unofficial**; base URL is kept for compatibility but
+ *   is not guaranteed against current Paymob Pakistan docs. Prefer an explicit
+ *   `baseUrl` if your account uses a different host.
  */
 export type PaymobRegion = 'ksa' | 'eg' | 'pk' | 'om' | 'ae';
 
@@ -78,7 +89,11 @@ export interface PaymobIdempotencyStore {
  * @see https://developers.paymob.com/ksa/getting-started-ksa
  */
 export interface PaymobConfig {
-    /** Secret key for Unified Intention API authorization */
+    /**
+     * Secret key for Unified Intention API authorization and preferred auth for
+     * post-pay management APIs (capture, refund, void, transaction inquiry)
+     * via `Authorization: Token ${secretKey}`.
+     */
     secretKey?: string;
     /** Public key used to launch Unified Checkout */
     publicKey?: string;
@@ -90,7 +105,12 @@ export interface PaymobConfig {
      * Production should configure hmacSecret.
      */
     allowUnverifiedWebhooks?: boolean;
-    /** Region (determines base URL). Default: 'ksa' */
+    /**
+     * Region (determines base URL). Default: `'ksa'`.
+     * `'pk'` is experimental/unofficial — the SDK keeps `https://pakistan.paymob.com`
+     * for backward compatibility but does not guarantee it against current Paymob
+     * Pakistan documentation. Prefer an explicit `baseUrl` when your account host differs.
+     */
     region?: PaymobRegion;
     /** Optional base URL override (takes precedence over region) */
     baseUrl?: string;
@@ -113,14 +133,25 @@ export interface PaymobConfig {
      * Without it, idempotency is scoped to one gateway instance.
      */
     idempotencyStore?: PaymobIdempotencyStore;
+    /**
+     * Optional per-currency minor-unit exponent overrides for amount conversion
+     * (create, capture, refund, webhooks mapping). Keys are ISO 4217 codes
+     * (case-insensitive lookup prefers uppercase). Defaults to ISO 4217 via
+     * `getCurrencyExponent` (e.g. OMR → 3). Merchants on Paymob Oman (or other
+     * regions) whose account expects non-ISO scaling should set overrides only
+     * after confirming with Paymob — e.g. `{ OMR: 3 }` or `{ OMR: 2 }` if their
+     * account documents two-decimal OMR.
+     */
+    currencyExponentOverrides?: Record<string, number>;
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Legacy fields (deprecated, for backward compat with Egypt API)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * API key used to generate auth tokens for legacy checkout and payment
-     * management APIs such as capture, refund, void, and transaction inquiry.
+     * Legacy API key used to exchange `/api/auth/tokens` for auth tokens.
+     * Required for deprecated iframe checkout. Optional fallback for capture,
+     * refund, void, and transaction inquiry when `secretKey` is not set.
      */
     apiKey?: string;
 }
@@ -131,13 +162,21 @@ export interface PaymobConfig {
 export interface StripeConfig {
     /** Stripe Secret API Key */
     secretKey: string;
-    /** Stripe Publishable Key */
+    /**
+     * Stripe publishable key — client-side only (e.g. Stripe.js / Elements).
+     * Not used by this SDK backend.
+     */
     publishableKey?: string;
     /** Webhook signing secret */
     webhookSecret?: string;
     /** API version (optional, defaults to the SDK's pinned Stripe API version) */
     apiVersion?: string;
-    /** Expected webhook endpoint API version. Defaults to apiVersion/the SDK's pinned Stripe API version. */
+    /**
+     * Expected webhook endpoint API version. When set, `parseWebhookEvent` rejects
+     * snapshot events whose `api_version` does not match. Not set by default and
+     * does not fall back to `apiVersion` or the SDK pin — omit to accept any
+     * webhook API version Stripe delivers.
+     */
     webhookApiVersion?: string;
     /** Request timeout in milliseconds. Default: 30000 */
     timeoutMs?: number;

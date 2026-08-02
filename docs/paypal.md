@@ -16,8 +16,8 @@ const client = new PaymentClient({
     // Optional: Webhook verification (required for production)
     webhookId: process.env.PAYPAL_WEBHOOK_ID,
 
-    // Optional: Environment (default: false = production)
-    sandbox: process.env.NODE_ENV !== 'production',
+    // Optional: Environment (default: false = production). Prefer an explicit flag.
+    sandbox: process.env.PAYPAL_SANDBOX === 'true',
 
     // Optional: Request timeout in milliseconds (default: 30000)
     timeoutMs: 30000,
@@ -28,15 +28,22 @@ const client = new PaymentClient({
 
 ## Create Payment
 
+> **Order validity**: Uncaptured PayPal checkout orders typically expire after about **3 hours**. Capture (or authorize) promptly after the buyer returns from approval, and do not assume a stale order token remains valid.
+
 ```typescript
 const result = await client.createPayment({
   amount: 99.99,
   currency: 'USD',
+  // Optional when returnUrl is set. Used as fallback for return_url and/or cancel_url.
   callbackUrl: 'https://example.com/callback',
 
-  // PayPal-specific
+  // PayPal-specific return/cancel (optional when callbackUrl covers both)
   returnUrl: 'https://example.com/success',
   cancelUrl: 'https://example.com/cancel',
+
+  // Shipping preference (default: NO_SHIPPING). SET_PROVIDED_ADDRESS is rejected
+  // until the SDK supports a shipping-address payload on createPayment.
+  // paypalShippingPreference: 'NO_SHIPPING' | 'GET_FROM_FILE',
 
   // Idempotency (strongly recommended; required for safe retries after timeouts)
   idempotencyKey: crypto.randomUUID(),
@@ -53,9 +60,15 @@ if (result.redirectUrl) {
 }
 ```
 
+> **Return / cancel URLs**: At least one of `returnUrl` or `callbackUrl` is required for the success return. Cancel uses `cancelUrl ?? callbackUrl ?? returnUrl`, so **returnUrl-only is valid** (both PayPal `return_url` and `cancel_url` become that URL).
+
 ## Capture Payment (After Customer Approval)
 
 For one-time payments, PayPal uses a two-step flow: create order → capture after approval.
+
+> **Important — fulfillment**: Never fulfill on `captureResult.success` alone. Only fulfill when **`captureResult.status === 'paid'`** (or you treat paid/isSettled as settled). PayPal can return HTTP 200 with `status: 'pending'` (echeck / review) — pending keeps `success: true`; wait for **`PAYMENT.CAPTURE.COMPLETED`** (or poll) before fulfilling. Terminal failures (`status: 'failed'`) return **`success: false`**.
+>
+> **Important — refunds**: Persist **`captureResult.captureId`** (also exposed as `gatewayId` after capture). Refunds require the **capture ID**, not the order ID or authorization ID. Passing an order/auth ID yields a clear not-found error.
 
 ```typescript
 // Customer returns from PayPal with order ID in query params
@@ -70,10 +83,24 @@ const captureResult = await client.gateway('paypal').capturePayment({
 const captureId = captureResult.captureId;
 if (!captureId) throw new Error('PayPal capture ID missing');
 
-// Store captureId for future refunds
+// Do not ship/fulfill yet if the capture is still pending
+if (captureResult.status === 'pending') {
+  // Wait for PAYMENT.CAPTURE.COMPLETED (or DENIED/DECLINED) webhook
+  await db.payment.update({
+    where: { orderId },
+    data: { captureId, status: 'pending' },
+  });
+  return;
+}
+
+if (captureResult.status !== 'paid') {
+  throw new Error(`Unexpected PayPal capture status: ${captureResult.status}`);
+}
+
+// Store captureId for future refunds and fulfill only when paid
 await db.payment.update({
   where: { orderId },
-  data: { captureId },
+  data: { captureId, status: 'paid' },
 });
 ```
 
@@ -97,22 +124,30 @@ const authResult = await client.gateway('paypal').authorizePayment({
   idempotencyKey: crypto.randomUUID(),
 });
 
+// Terminal failures return success: false (same pattern as capturePayment).
+if (!authResult.success || authResult.status === 'failed') {
+  throw new Error(`PayPal authorize failed: ${authResult.status}`);
+}
+
 const authorizationId = authResult.authorizationId;
 if (!authorizationId) throw new Error('PayPal authorization ID missing');
 
+// Partial capture: when `amount` is set, final_capture defaults to **false**
+// (PayPal's API default is also false). Set paypalFinalCapture: true only when
+// this partial amount should close the authorization.
 const captureResult = await client.gateway('paypal').capturePayment({
   gatewayPaymentId: authorizationId,
   amount: 25.00,
   currency: 'USD',
   paypalCaptureType: 'authorization',
-  paypalFinalCapture: false,
+  // paypalFinalCapture omitted → false when amount is set
   idempotencyKey: crypto.randomUUID(),
 });
 
 const firstCaptureId = captureResult.captureId;
 if (!firstCaptureId) throw new Error('PayPal capture ID missing');
 
-// Final capture from the same authorization
+// Final capture from the same authorization (amount set + explicit final)
 await client.gateway('paypal').capturePayment({
   gatewayPaymentId: authorizationId,
   amount: 74.99,
@@ -121,18 +156,27 @@ await client.gateway('paypal').capturePayment({
   paypalFinalCapture: true,
   idempotencyKey: crypto.randomUUID(),
 });
+
+// Or omit `amount` to capture the remaining authorized balance; SDK defaults
+// final_capture to **true** for that full remaining capture.
 ```
 
 ## Refunds
 
 > **Important**: PayPal refunds require the **Capture ID**, not the Order ID.
+>
+> **Success flag**: A failed (or cancelled) refund status returns **`success: false`**. Do not treat `success: true` alone as settled — check `status` (`completed` | `pending` | `failed`).
 
 ```typescript
 // Full refund
-await client.refundPayment({
+const refundResult = await client.refundPayment({
   gatewayPaymentId: captureId, // Use capture ID!
   idempotencyKey: crypto.randomUUID(),
 });
+
+if (!refundResult.success || refundResult.status === 'failed') {
+  throw new Error(`PayPal refund failed: ${refundResult.status}`);
+}
 
 // Partial refund (currency required)
 await client.refundPayment({
@@ -177,13 +221,32 @@ console.log(payment.amount);
 
 ## Webhook Verification
 
-PayPal requires **async verification** via their API. The SDK's `handleWebhook()` automatically uses async verification for PayPal when you pass the webhook headers.
+PayPal requires **async verification** via their API. The SDK's `handleWebhook()` automatically uses `verifyWebhookAsync` for PayPal when you pass the webhook headers.
+
+> **`paypal.webhookId` is required** for verification. If it is missing, `verifyWebhookAsync` throws `InvalidRequestError` (`paypal.webhookId is required for webhook verification`) so `handleWebhook` surfaces a config error instead of a generic verification failure.
+>
+> **Sync `verifyWebhook()` throws** `InvalidRequestError` — always use `verifyWebhookAsync` or `client.handleWebhook`. Do not rely on a boolean return from the sync method.
+
+### Raw body is required for reliable verification
+
+Prefer the **raw request body** as a string, `Buffer`, or `Uint8Array` (same recommendation as Stripe). The SDK embeds those **exact bytes/text** as PayPal's `webhook_event` field **without** parse→stringify reordering and **without trimming** (trailing newlines and original whitespace are preserved). Only a trimmed *copy* is used to validate that the payload is a JSON object. Already-parsed objects are accepted but the SDK warns and re-serializes them — verification may fail.
+
+Frameworks that auto-parse JSON should use a raw-body parser on the webhook route (e.g. `express.raw({ type: 'application/json' })`).
+
+### Other verify guards
+
+- Certificate URLs from `paypal-cert-url` are allowlisted to HTTPS hosts under `*.paypal.com` (including `api.paypal.com`, `api-m.paypal.com`, and sandbox variants) before any verify API call.
+- `paypal-transmission-time` must be parseable and **not older than 15 minutes** (replay protection). Aged or unparseable values are rejected before calling PayPal.
+- Deduplicate deliveries with **`event.id`** (PayPal's webhook event id). PayPal may retry the same event.
 
 ```typescript
+// Prefer raw body so verification embeds the original JSON bytes PayPal signed.
 app.post('/webhooks/paypal', async (req) => {
+  const rawBody = req.rawBody ?? req.body; // string | Buffer | Uint8Array | object
+
   let event;
   try {
-    event = await client.handleWebhook('paypal', req.body, {
+    event = await client.handleWebhook('paypal', rawBody, {
       'paypal-transmission-id': req.headers['paypal-transmission-id'],
       'paypal-transmission-time': req.headers['paypal-transmission-time'],
       'paypal-transmission-sig': req.headers['paypal-transmission-sig'],
@@ -196,7 +259,13 @@ app.post('/webhooks/paypal', async (req) => {
     throw error;
   }
 
-  console.log(event.status);          // 'paid', 'refunded', 'refund_pending', etc.
+  // Deduplicate with event.id before fulfilling
+  // await db.webhookEvent.create({ data: { id: event.id } }).catch(ignoreDuplicate)
+
+  // Fulfill only when status is paid (or the specific lifecycle status you handle).
+  // Do not treat verification success alone as a paid capture.
+  console.log(event.id);              // PayPal webhook event id — use for idempotent handling
+  console.log(event.status);          // 'paid', 'pending', 'refunded', 'refund_pending', etc.
   console.log(event.paymentId);       // Your custom_id, or purchase unit reference_id fallback
   console.log(event.gatewayPaymentId); // Capture ID when PayPal provides one; otherwise the emitted resource ID
   console.log(event.amount);          // Undefined for PayPal events that do not include amount data
@@ -209,13 +278,27 @@ app.post('/webhooks/paypal', async (req) => {
 
 | Topic | Note |
 |-------|------|
-| **Capture ID** | Store the capture ID from `capturePayment()` for refunds |
+| **Sandbox flag (`PAYPAL_SANDBOX`)** | Use `sandbox: process.env.PAYPAL_SANDBOX === 'true'` (explicit). Do not infer sandbox solely from `NODE_ENV`. |
+| **Order validity** | Checkout orders generally remain valid for about **3 hours** after creation; capture/authorize before they expire. |
+| **Capture ID for refunds** | Store **`captureId`** from `capturePayment()` — refunds **must** use the capture ID, never the order ID or authorization ID. |
 | **Capture result ID** | After capture, `result.gatewayId` is the PayPal capture ID. The original PayPal order is available as `result.orderId`. |
+| **Multiple captures** | When an order has multiple captures, `getPayment` / order capture / webhooks prefer the **latest** capture by `update_time`/`create_time` when present; otherwise the last array element. |
+| **Capture fulfillment** | Never fulfill on `success: true` alone. Require **`status === 'paid'`**. Pending captures return `success: true` + `status: 'pending'`; **failed** captures return `success: false`. Prefer **`PAYMENT.CAPTURE.COMPLETED`** as the fulfillment webhook signal (or poll until paid). |
+| **Shipping preference** | Default `shipping_preference` is **`NO_SHIPPING`**. Optional `paypalShippingPreference`: `NO_SHIPPING` \| `GET_FROM_FILE`. **`SET_PROVIDED_ADDRESS` is rejected** until shipping-address params exist on create. |
+| **Field length limits** | Client-enforced: `description` ≤ 127, `orderId` (reference_id) ≤ 256, `metadata.paymentId` (custom_id) ≤ 127, refund `reason` (note_to_payer) ≤ 255. |
+| **Return / cancel URLs** | Create requires `returnUrl` or `callbackUrl`. Cancel is `cancelUrl ?? callbackUrl ?? returnUrl` — **returnUrl-only is OK** (both URLs use returnUrl). |
+| **Authorize / refund success** | Like capture: terminal **failed** statuses return **`success: false`** (refund cancelled maps to failed). Pending/completed keep `success: true`. |
+| **Webhook raw body** | **Required for reliable verify**: pass the unparsed body (string / `Buffer` / `Uint8Array`) to `handleWebhook` / `verifyWebhookAsync`. The SDK embeds those **exact** JSON bytes as `webhook_event` (no re-serialization, no trim). Parsed objects are accepted but may fail signature verification. |
+| **Webhook sync path** | `verifyWebhook()` (sync) always throws `InvalidRequestError`. Use `verifyWebhookAsync` or `client.handleWebhook`. |
+| **Webhook transmission age** | `paypal-transmission-time` older than **15 minutes** (or unparseable) is rejected before calling PayPal. |
+| **Webhook event dedupe** | Use **`event.id`** to dedupe PayPal deliveries; the same event may be retried. |
+| **Webhook cert URL** | `paypal-cert-url` must be HTTPS on a `*.paypal.com` host; other URLs are rejected before calling PayPal. |
 | **Authorization ID** | Store the authorization ID from `authorizePayment()` for voids or delayed captures |
+| **AUTHORIZATION webhooks** | `PAYMENT.AUTHORIZATION.CAPTURED` maps to `paid`, but if PayPal does not include a capture id, `gatewayPaymentId` is the **authorization id** — that is **not** refundable. Prefer capture webhooks / stored `captureId` for refunds. |
 | **Status lookup IDs** | `getPayment()` and `getPaymentStatus()` accept PayPal order IDs, capture IDs, and authorization IDs, so the `gatewayId` returned from create, authorize, or capture can be checked later. |
 | **Authorization captures** | `capturePayment()` only accepts `amount` with `paypalCaptureType: 'authorization'` |
 | **Authorize params** | `authorizePayment()` only accepts `gatewayPaymentId` and `idempotencyKey`; capture-only fields are rejected. |
-| **Final capture** | Authorization captures default to `paypalFinalCapture: true`; set `false` before the final capture only when you need multiple captures |
+| **Final capture** | PayPal API default for `final_capture` is `false`. SDK product defaults: **no amount** (full remaining) → `true`; **amount set** (partial) → `false` unless `paypalFinalCapture === true`. |
 | **Payment preference** | Create-order requests set PayPal wallet `payment_method_preference` to `IMMEDIATE_PAYMENT_REQUIRED`, matching PayPal's current direct Orders API examples. |
 | **Currency** | Required for partial refunds and partial authorization captures; optional for full refunds |
 | **Zero-decimal currencies** | `JPY`, `HUF`, and `TWD` amounts must be whole numbers |
@@ -235,17 +318,17 @@ app.post('/webhooks/paypal', async (req) => {
 
 | Event Type | Mapped Status |
 |------------|---------------|
-| `PAYMENT.CAPTURE.COMPLETED` | `paid` |
+| `PAYMENT.CAPTURE.COMPLETED` | `paid` (**preferred fulfillment signal**) |
 | `PAYMENT.CAPTURE.DENIED` | `failed` |
 | `PAYMENT.CAPTURE.DECLINED` | `failed` |
 | `PAYMENT.CAPTURE.PENDING` | `pending` |
 | `PAYMENT.CAPTURE.REFUNDED` | `refunded` or `partially_refunded` based on PayPal capture status |
 | `PAYMENT.CAPTURE.REVERSED` | `reversed` |
 | `CHECKOUT.ORDER.APPROVED` | `approved` |
-| `CHECKOUT.ORDER.COMPLETED` | `paid` |
+| `CHECKOUT.ORDER.COMPLETED` | `paid` only when a capture is present on the resource; otherwise `approved` (do not auto-fulfill auth-only completed orders) |
 | `CHECKOUT.PAYMENT-APPROVAL.REVERSED` | `cancelled` |
 | `PAYMENT.AUTHORIZATION.CREATED` | `authorized` |
-| `PAYMENT.AUTHORIZATION.CAPTURED` | `paid` |
+| `PAYMENT.AUTHORIZATION.CAPTURED` | `paid` (see note: capture id may be missing; auth id is not refundable) |
 | `PAYMENT.AUTHORIZATION.PARTIALLY_CAPTURED` | `partially_captured` |
 | `PAYMENT.AUTHORIZATION.VOIDED` | `cancelled` |
 | `PAYMENT.REFUND.PENDING` | `refund_pending` |

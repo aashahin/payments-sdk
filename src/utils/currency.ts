@@ -21,10 +21,10 @@ const ZERO_DECIMAL_CURRENCIES: ReadonlySet<string> = new Set([
   "CLP",
   "DJF",
   "GNF",
+  "ISK", // ISO 4217 exponent 0 (Stripe may treat ISK specially — keep gateway tables separate)
   "JPY",
   "KMF",
   "KRW",
-  "MGA",
   "PYG",
   "RWF",
   "UGX",
@@ -33,6 +33,7 @@ const ZERO_DECIMAL_CURRENCIES: ReadonlySet<string> = new Set([
   "XAF",
   "XOF",
   "XPF",
+  // MGA is ISO 4217 exponent 2 (not zero-decimal); do not list here
 ]);
 
 /**

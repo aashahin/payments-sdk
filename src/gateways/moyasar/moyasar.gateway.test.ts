@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HooksManager } from "../../hooks/hooks.manager";
 import {
+  AuthenticationError,
+  CardDeclinedError,
   InvalidRequestError,
   InvalidWebhookError,
   NetworkError,
@@ -237,6 +239,64 @@ describe("MoyasarGateway", () => {
       expect(result.status).toBe("failed");
     });
 
+    it("marks unmapped provider statuses as unsuccessful (success false)", async () => {
+      const warnings: string[] = [];
+      const logger = {
+        debug() {},
+        info() {},
+        warn: (message: string) => warnings.push(message),
+        error() {},
+      };
+      mockFetchJson(
+        paymentResponse({
+          status: "totally_unknown_status",
+        }),
+        201,
+      );
+
+      const result = await new MoyasarGateway(
+        CONFIG,
+        new HooksManager(),
+        logger,
+      ).createPayment({
+        amount: 100,
+        currency: "SAR",
+        callbackUrl: "https://example.com/callback",
+        moyasarSource: {
+          type: "token",
+          token: "token_test_123",
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.status).toBe("failed");
+      expect(warnings.some((w) => w.includes("Unmapped payment status"))).toBe(
+        true,
+      );
+    });
+
+    it("marks abandoned payments as unsuccessful", async () => {
+      mockFetchJson(
+        paymentResponse({
+          status: "abandoned",
+        }),
+        201,
+      );
+
+      const result = await createGateway().createPayment({
+        amount: 100,
+        currency: "SAR",
+        callbackUrl: "https://example.com/callback",
+        moyasarSource: {
+          type: "token",
+          token: "token_test_123",
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.status).toBe("failed");
+    });
+
     it("does not require callbackUrl for STC Pay and returns OTP nextAction", async () => {
       mockFetchJson(
         paymentResponse({
@@ -407,7 +467,73 @@ describe("MoyasarGateway", () => {
       });
     });
 
-    it("forwards documented Moyasar split and AFT fields", async () => {
+    it("rejects invalid Apple Pay shape with InvalidRequestError (not GatewayApiError)", async () => {
+      await expect(
+        createGateway().createPayment({
+          amount: 100,
+          currency: "SAR",
+          moyasarSource: {
+            type: "applepay",
+            // Neither encrypted token nor decrypted DPAN fields
+          } as any,
+        }),
+      ).rejects.toBeInstanceOf(InvalidRequestError);
+
+      expect(fetchCalls).toHaveLength(0);
+    });
+
+    it("rejects capture:false for decrypted Apple Pay (DPAN) sources", async () => {
+      await expect(
+        createGateway().createPayment({
+          amount: 100,
+          currency: "SAR",
+          capture: false,
+          moyasarSource: {
+            type: "applepay",
+            dpan: "4111111111111111",
+            month: 12,
+            year: 2029,
+            cryptogram: "cryptogram",
+            deviceId: "device123",
+          },
+        }),
+      ).rejects.toBeInstanceOf(InvalidRequestError);
+
+      expect(fetchCalls).toHaveLength(0);
+    });
+
+    it("rejects capture:false for STC Pay sources", async () => {
+      await expect(
+        createGateway().createPayment({
+          amount: 100,
+          currency: "SAR",
+          capture: false,
+          moyasarSource: {
+            type: "stcpay",
+            mobile: "0512345678",
+          },
+        }),
+      ).rejects.toBeInstanceOf(InvalidRequestError);
+
+      expect(fetchCalls).toHaveLength(0);
+    });
+
+    it("uppercases currency on create payment requests", async () => {
+      mockFetchJson(paymentResponse());
+
+      await createGateway().createPayment({
+        amount: 100,
+        currency: "sar",
+        moyasarSource: {
+          type: "applepay",
+          token: "encrypted_token",
+        },
+      });
+
+      expect(lastRequestBody().currency).toBe("SAR");
+    });
+
+    it("converts split amounts from major units to Moyasar minor units", async () => {
       mockFetchJson(paymentResponse());
 
       await createGateway().createPayment({
@@ -420,7 +546,7 @@ describe("MoyasarGateway", () => {
         },
         splits: [
           {
-            amount: 5000,
+            amount: 50, // major units → 5000 halalas
             recipient_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
             reference: "split_1",
             fee_source: true,
@@ -458,6 +584,34 @@ describe("MoyasarGateway", () => {
       ]);
       expect(body.recipient.first_name).toBe("Saleh");
       expect(body.sender.account.funds_source).toBe("01");
+    });
+
+    it("converts negative split amounts to minor units when reverse splits are used", async () => {
+      mockFetchJson(paymentResponse());
+
+      await createGateway().createPayment({
+        amount: 100,
+        currency: "SAR",
+        moyasarSource: {
+          type: "applepay",
+          token: "encrypted_token",
+        },
+        splits: [
+          {
+            amount: 120,
+            recipient_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+          },
+          {
+            amount: -20,
+            recipient_id: "4fa85f64-5717-4562-b3fc-2c963f66afa6",
+          },
+        ],
+      });
+
+      expect(lastRequestBody().splits.map((s: { amount: number }) => s.amount)).toEqual([
+        12000,
+        -2000,
+      ]);
     });
 
     it("copies orderId into Moyasar metadata for webhook correlation", async () => {
@@ -593,7 +747,7 @@ describe("MoyasarGateway", () => {
       expect(fetchCalls).toHaveLength(0);
     });
 
-    it("omits request body for full capture", async () => {
+    it("omits request body and Content-Type for full capture", async () => {
       mockFetchJson(paymentResponse({ status: "captured" }));
 
       await createGateway().capturePayment({
@@ -601,6 +755,8 @@ describe("MoyasarGateway", () => {
       });
 
       expect(lastRequestBodyOrUndefined()).toBeUndefined();
+      const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
+      expect(headers["Content-Type"]).toBeUndefined();
     });
 
     it("maps refund totals using response currency minor units", async () => {
@@ -626,6 +782,82 @@ describe("MoyasarGateway", () => {
       expect(result.refundedAt).toEqual(new Date("2026-05-21T10:05:00Z"));
     });
 
+    it("marks partial refunds completed even when provider status is still paid", async () => {
+      mockFetchJson(
+        paymentResponse({
+          status: "paid",
+          amount: 10000,
+          captured: 10000,
+          refunded: 4000,
+          refunded_at: "2026-05-21T10:05:00Z",
+        }),
+      );
+
+      const result = await createGateway().refundPayment({
+        gatewayPaymentId: PAYMENT_ID,
+        amount: 40,
+        currency: "SAR",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.totalRefunded).toBe(40);
+    });
+
+    it("maps getPayment partial refund amounts to partially_refunded", async () => {
+      mockFetchJson(
+        paymentResponse({
+          status: "paid",
+          amount: 10000,
+          captured: 10000,
+          refunded: 2500,
+        }),
+      );
+
+      const result = await createGateway().getPayment({
+        gatewayPaymentId: PAYMENT_ID,
+      });
+
+      expect(result.status).toBe("partially_refunded");
+      expect(result.refundedAmount).toBe(25);
+    });
+
+    it("maps Moyasar verified status to setup_completed (not authorized)", async () => {
+      mockFetchJson(
+        paymentResponse({
+          status: "verified",
+          amount: 0,
+          captured: 0,
+          refunded: 0,
+        }),
+      );
+
+      const result = await createGateway().getPayment({
+        gatewayPaymentId: PAYMENT_ID,
+      });
+
+      expect(result.status).toBe("setup_completed");
+    });
+
+    it("maps partial capture amounts to partially_captured", async () => {
+      mockFetchJson(
+        paymentResponse({
+          status: "authorized",
+          amount: 10000,
+          captured: 3000,
+          refunded: 0,
+        }),
+      );
+
+      const result = await createGateway().capturePayment({
+        gatewayPaymentId: PAYMENT_ID,
+        amount: 30,
+        currency: "SAR",
+      });
+
+      expect(result.status).toBe("partially_captured");
+      expect(result.capturedAmount).toBe(30);
+    });
+
     it("requires currency for partial refunds instead of defaulting to SAR", async () => {
       await expect(
         createGateway().refundPayment({
@@ -637,7 +869,7 @@ describe("MoyasarGateway", () => {
       expect(fetchCalls).toHaveLength(0);
     });
 
-    it("omits request body for full refund", async () => {
+    it("omits request body and Content-Type for full refund", async () => {
       mockFetchJson(paymentResponse({ status: "refunded" }));
 
       await createGateway().refundPayment({
@@ -645,6 +877,20 @@ describe("MoyasarGateway", () => {
       });
 
       expect(lastRequestBodyOrUndefined()).toBeUndefined();
+      const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
+      expect(headers["Content-Type"]).toBeUndefined();
+    });
+
+    it("omits Content-Type for void (empty body)", async () => {
+      mockFetchJson(paymentResponse({ status: "voided" }));
+
+      await createGateway().voidPayment({
+        gatewayPaymentId: PAYMENT_ID,
+      });
+
+      expect(lastRequestBodyOrUndefined()).toBeUndefined();
+      const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
+      expect(headers["Content-Type"]).toBeUndefined();
     });
 
     it("keeps Moyasar validation error details when error fields are not arrays", async () => {
@@ -700,6 +946,50 @@ describe("MoyasarGateway", () => {
           gatewayPaymentId: MISSING_PAYMENT_ID,
         }),
       ).rejects.toBeInstanceOf(ResourceNotFoundError);
+    });
+
+    it("maps 3ds_auth_error to CardDeclinedError (not AuthenticationError)", async () => {
+      mockFetchJson(
+        {
+          type: "3ds_auth_error",
+          message: "3DS authentication failed",
+          errors: null,
+        },
+        400,
+      );
+
+      let caught: unknown;
+      try {
+        await createGateway().createPayment({
+          amount: 100,
+          currency: "SAR",
+          callbackUrl: "https://example.com/callback",
+          moyasarSource: { type: "token", token: "token_abc" },
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(CardDeclinedError);
+      expect(caught).not.toBeInstanceOf(AuthenticationError);
+      expect((caught as CardDeclinedError).message).toBe(
+        "3DS authentication failed",
+      );
+    });
+
+    it("keeps authentication_error as AuthenticationError", async () => {
+      mockFetchJson(
+        {
+          type: "authentication_error",
+          message: "Invalid secret key",
+          errors: null,
+        },
+        401,
+      );
+
+      await expect(
+        createGateway().getPayment({ gatewayPaymentId: PAYMENT_ID }),
+      ).rejects.toBeInstanceOf(AuthenticationError);
     });
   });
 
@@ -898,6 +1188,137 @@ describe("MoyasarGateway", () => {
       expect(event.gatewayPaymentId).toBe(PAYMENT_ID);
     });
 
+    it("strips secret_token from webhook rawPayload", () => {
+      const event = createGateway().parseWebhookEvent({
+        id: "wh_123",
+        type: "payment_paid",
+        secret_token: "webhook_secret",
+        created_at: "2026-05-21T10:00:00Z",
+        data: {
+          id: PAYMENT_ID,
+          status: "paid",
+          amount: 10000,
+          currency: "SAR",
+        },
+      });
+
+      expect(event.rawPayload).toEqual({
+        id: "wh_123",
+        type: "payment_paid",
+        created_at: "2026-05-21T10:00:00Z",
+        data: {
+          id: PAYMENT_ID,
+          status: "paid",
+          amount: 10000,
+          currency: "SAR",
+        },
+      });
+      expect(
+        (event.rawPayload as Record<string, unknown>).secret_token,
+      ).toBeUndefined();
+    });
+
+    it("maps verified webhook status to setup_completed", () => {
+      const event = createGateway().parseWebhookEvent({
+        id: "wh_123",
+        type: "payment_verified",
+        secret_token: "webhook_secret",
+        created_at: "2026-05-21T10:00:00Z",
+        data: {
+          id: PAYMENT_ID,
+          status: "verified",
+          amount: 0,
+          currency: "SAR",
+        },
+      });
+
+      expect(event.status).toBe("setup_completed");
+    });
+
+    it("sets livemode true when webhook envelope live is true", () => {
+      const event = createGateway().parseWebhookEvent({
+        id: "wh_123",
+        type: "payment_paid",
+        secret_token: "webhook_secret",
+        created_at: "2026-05-21T10:00:00Z",
+        live: true,
+        data: {
+          id: PAYMENT_ID,
+          status: "paid",
+          amount: 10000,
+          currency: "SAR",
+        },
+      });
+
+      expect(event.livemode).toBe(true);
+    });
+
+    it("sets livemode false when webhook envelope live is false", () => {
+      const event = createGateway().parseWebhookEvent({
+        id: "wh_123",
+        type: "payment_paid",
+        secret_token: "webhook_secret",
+        created_at: "2026-05-21T10:00:00Z",
+        live: false,
+        data: {
+          id: PAYMENT_ID,
+          status: "paid",
+          amount: 10000,
+          currency: "SAR",
+        },
+      });
+
+      expect(event.livemode).toBe(false);
+    });
+
+    it("maps partial refund amounts on webhooks to partially_refunded", () => {
+      const event = createGateway().parseWebhookEvent({
+        id: "wh_123",
+        type: "payment_refunded",
+        secret_token: "webhook_secret",
+        created_at: "2026-05-21T10:00:00Z",
+        data: {
+          id: PAYMENT_ID,
+          status: "paid",
+          amount: 10000,
+          currency: "SAR",
+          refunded: 2500,
+          captured: 10000,
+        },
+      });
+
+      expect(event.status).toBe("partially_refunded");
+    });
+
+    it("maps unmapped provider statuses to failed (fail-closed)", () => {
+      const warnings: string[] = [];
+      const logger = {
+        debug() {},
+        info() {},
+        warn: (message: string) => warnings.push(message),
+        error() {},
+      };
+      const gateway = new MoyasarGateway(CONFIG, new HooksManager(), logger);
+
+      const event = gateway.parseWebhookEvent({
+        id: "wh_123",
+        type: "payment_unknown",
+        secret_token: "webhook_secret",
+        created_at: "2026-05-21T10:00:00Z",
+        data: {
+          id: PAYMENT_ID,
+          status: "totally_unknown_status",
+          amount: 10000,
+          currency: "SAR",
+        },
+      });
+
+      expect(event.status).toBe("failed");
+      expect(warnings.some((w) => w.includes("Unmapped payment status"))).toBe(
+        true,
+      );
+    });
+
     it("falls back to metadata.orderId when paymentId is absent", () => {
       const event = createGateway().parseWebhookEvent({
         id: "wh_123",
@@ -958,6 +1379,38 @@ describe("MoyasarGateway", () => {
 
       expect(event.type).toBe("payment_failed");
       expect(event.status).toBe("failed");
+    });
+
+    it("rejects card_auth_* webhooks instead of mapping them as payments", () => {
+      expect(() =>
+        createGateway().parseWebhookEvent({
+          id: "wh_card_auth",
+          type: "card_auth_authenticated",
+          secret_token: "webhook_secret",
+          created_at: "2026-05-21T10:00:00Z",
+          data: {
+            id: "ca_2a1b3c4d",
+            status: "authenticated",
+            amount: 10000,
+            currency: "SAR",
+          },
+        }),
+      ).toThrow(InvalidWebhookError);
+
+      expect(() =>
+        createGateway().parseWebhookEvent({
+          id: "wh_card_auth_fail",
+          type: "card_auth_failed",
+          secret_token: "webhook_secret",
+          created_at: "2026-05-21T10:00:00Z",
+          data: {
+            id: "ca_2a1b3c4d",
+            status: "failed",
+            amount: 10000,
+            currency: "SAR",
+          },
+        }),
+      ).toThrow(InvalidWebhookError);
     });
   });
 
@@ -1145,6 +1598,20 @@ describe("MoyasarGateway", () => {
       return { warnings, logger };
     };
 
+    it("warns when no idempotencyStore is configured", () => {
+      const { warnings, logger } = captureWarnings();
+
+      new MoyasarGateway(CONFIG, new HooksManager(), logger);
+
+      expect(
+        warnings.some(
+          (w) =>
+            w.includes("No idempotencyStore configured") &&
+            w.includes("double refund"),
+        ),
+      ).toBe(true);
+    });
+
     it("warns when the idempotency store lacks atomic reserve()", () => {
       const { warnings, logger } = captureWarnings();
       const storeWithoutReserve = {
@@ -1172,6 +1639,26 @@ describe("MoyasarGateway", () => {
       );
 
       expect(warnings.some((w) => w.includes("atomic reserve"))).toBe(false);
+      expect(warnings.some((w) => w.includes("No idempotencyStore"))).toBe(
+        false,
+      );
+    });
+
+    it("warns once per mutation when idempotencyKey is set without a store", async () => {
+      const { warnings, logger } = captureWarnings();
+      const gateway = new MoyasarGateway(CONFIG, new HooksManager(), logger);
+      mockFetchJson(paymentResponse({ status: "refunded", refunded: 10000 }));
+
+      await gateway.refundPayment({
+        gatewayPaymentId: PAYMENT_ID,
+        idempotencyKey: "unguarded-key",
+      });
+
+      const mutationWarnings = warnings.filter((w) =>
+        w.includes("idempotencyKey but no idempotencyStore"),
+      );
+      expect(mutationWarnings).toHaveLength(1);
+      expect(fetchCalls).toHaveLength(1);
     });
   });
 });

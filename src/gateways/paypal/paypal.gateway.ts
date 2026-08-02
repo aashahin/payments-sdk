@@ -15,7 +15,7 @@ import type { PayPalWebhookPayload, WebhookEvent, } from "../../types/webhook.ty
 import type { PayPalConfig } from "../../types/config.types";
 import type { HooksManager } from "../../hooks/hooks.manager";
 import {
-  CreatePaymentParamsSchema,
+  PayPalCreatePaymentParamsSchema,
   CaptureParamsSchema,
   GetPaymentParamsSchema,
   RefundParamsSchema,
@@ -83,6 +83,8 @@ interface PayPalOrderResponse {
           currency_code: string;
           value: string;
         };
+        create_time?: string;
+        update_time?: string;
       }>;
       authorizations?: Array<{
         id: string;
@@ -91,6 +93,8 @@ interface PayPalOrderResponse {
           currency_code: string;
           value: string;
         };
+        create_time?: string;
+        update_time?: string;
       }>;
     };
   }>;
@@ -155,7 +159,21 @@ const MONEY_EPSILON = 1e-9;
 const PAYPAL_ORDER_REQUEST_ID_MAX_LENGTH = 108;
 const PAYPAL_PAYMENTS_REQUEST_ID_MAX_LENGTH = 10_000;
 const PAYPAL_CUSTOM_ID_MAX_LENGTH = 127;
+/** PayPal purchase_unit.description max length. */
+const PAYPAL_DESCRIPTION_MAX_LENGTH = 127;
+/** PayPal purchase_unit.reference_id (SDK orderId) max length. */
+const PAYPAL_ORDER_ID_MAX_LENGTH = 256;
+/** PayPal refund note_to_payer max length (SDK reason). */
+const PAYPAL_REFUND_NOTE_MAX_LENGTH = 255;
 const PAYPAL_WEBHOOK_ID_MAX_LENGTH = 50;
+/**
+ * Maximum age of `paypal-transmission-time` accepted for webhook verification.
+ * Older transmissions are rejected to limit replay risk.
+ */
+const PAYPAL_WEBHOOK_MAX_AGE_MS = 15 * 60 * 1000;
+/** Heuristic for unknown resource statuses that appear terminal (fail-closed). */
+const PAYPAL_TERMINAL_RESOURCE_STATUS_PATTERN =
+  /FAIL|DENIED|DECLIN|CANCEL|VOID|EXPIR|REJECT|ERROR|ABORT|BLOCK/i;
 const PAYPAL_WEBHOOK_HEADER_LIMITS = {
   authAlgo: 100,
   certUrl: 500,
@@ -287,7 +305,10 @@ export class PayPalGateway extends BaseGateway {
 
         this.assertOrderResponse(data, "get payment");
 
-        const capture = data.purchase_units?.[0]?.payments?.captures?.[0];
+        // Prefer the last capture when multiple exist (most recent partial/full capture).
+        const capture = this.preferLastCapture(
+          data.purchase_units?.[0]?.payments?.captures,
+        );
         const authorization = data.purchase_units?.[0]?.payments?.authorizations?.[0];
         const purchaseUnitAmount = data.purchase_units?.[0]?.amount;
         const amount = capture?.amount ?? authorization?.amount ?? purchaseUnitAmount;
@@ -322,7 +343,37 @@ export class PayPalGateway extends BaseGateway {
     params: CreatePaymentParams,
   ): Promise<GatewayPaymentResult> {
     return this.executeWithHooks("createPayment", params, async (p) => {
+      // PayPal experience_context needs return + cancel URLs.
+      // Success return: returnUrl | callbackUrl. Cancel: cancelUrl | callbackUrl | returnUrl.
+      // returnUrl-only is legal (both return_url and cancel_url use returnUrl).
+      if (!p.returnUrl && !p.callbackUrl) {
+        throw new InvalidRequestError(
+          "PayPal createPayment requires returnUrl or callbackUrl",
+        );
+      }
+      if (!p.cancelUrl && !p.callbackUrl && !p.returnUrl) {
+        throw new InvalidRequestError(
+          "PayPal createPayment requires cancelUrl, callbackUrl, or returnUrl for cancel fallback",
+        );
+      }
+      // Shipping address payload is not yet supported on createPayment.
+      if (p.paypalShippingPreference === "SET_PROVIDED_ADDRESS") {
+        throw new InvalidRequestError(
+          "PayPal shipping_preference SET_PROVIDED_ADDRESS is not supported: shipping address payload is not yet available. Use NO_SHIPPING (default) or GET_FROM_FILE.",
+        );
+      }
+
       const requestId = this.getRequestId(p.idempotencyKey, PAYPAL_ORDER_REQUEST_ID_MAX_LENGTH);
+      this.assertMaxLength(
+        p.orderId,
+        PAYPAL_ORDER_ID_MAX_LENGTH,
+        "PayPal orderId (reference_id)",
+      );
+      this.assertMaxLength(
+        p.description,
+        PAYPAL_DESCRIPTION_MAX_LENGTH,
+        "PayPal description",
+      );
       return withRetry(async () => {
         const customId = this.getCustomId(p.metadata);
         const body = JSON.stringify({
@@ -343,7 +394,7 @@ export class PayPalGateway extends BaseGateway {
               experience_context: {
                 payment_method_preference: "IMMEDIATE_PAYMENT_REQUIRED",
                 return_url: p.returnUrl ?? p.callbackUrl,
-                cancel_url: p.cancelUrl ?? p.callbackUrl,
+                cancel_url: p.cancelUrl ?? p.callbackUrl ?? p.returnUrl,
                 shipping_preference: p.paypalShippingPreference ?? "NO_SHIPPING",
                 user_action: "PAY_NOW",
               },
@@ -377,16 +428,18 @@ export class PayPalGateway extends BaseGateway {
           );
         }
 
+        const status = this.mapStatus(data.status);
         return {
-          success: true,
+          // Terminal failed statuses are not successful payment outcomes.
+          success: status !== "failed",
           gatewayId: data.id,
           orderId: data.id,
-          status: this.mapStatus(data.status),
+          status,
           redirectUrl: approvalLink?.href,
           rawResponse: data,
         };
       }, isRetryableError);
-    }, CreatePaymentParamsSchema);
+    }, PayPalCreatePaymentParamsSchema);
   }
 
   /**
@@ -426,8 +479,15 @@ export class PayPalGateway extends BaseGateway {
           };
         }
 
+        // PayPal API defaults final_capture to false. SDK product defaults:
+        // - full capture (no amount): true (capture remaining balance and close auth)
+        // - partial (amount set): false unless paypalFinalCapture === true
         if (isAuthorizationCapture) {
-          body.final_capture = p.paypalFinalCapture ?? true;
+          if (p.amount !== undefined) {
+            body.final_capture = p.paypalFinalCapture === true;
+          } else {
+            body.final_capture = p.paypalFinalCapture ?? true;
+          }
         }
 
         const response = await this.fetchWithAccessToken(url, (token) => ({
@@ -445,24 +505,39 @@ export class PayPalGateway extends BaseGateway {
 
         this.assertOrderResponse(data, "capture payment");
 
-        // Extract capture details
+        // Extract capture details (prefer last capture on multi-capture order responses)
         const capture = isAuthorizationCapture
           ? {
             id: data.id,
             status: data.status,
             amount: data.amount,
           }
-          : data.purchase_units?.[0]?.payments?.captures?.[0];
+          : this.preferLastCapture(
+            data.purchase_units?.[0]?.payments?.captures,
+          );
 
         this.assertPaymentResource(capture, "capture payment");
 
+        const status = capture
+          ? this.mapResourceStatus(capture.status)
+          : this.mapStatus(data.status);
+
+        // PayPal can return HTTP 200 with capture status PENDING (echeck, review).
+        // success remains true for pending API outcomes; callers must require status === "paid".
+        // Terminal failed statuses set success:false so callers do not treat them as settled.
+        if (status === "pending") {
+          this.logger.warn(
+            "[PayPal] Capture returned pending status; do not fulfill until status is paid (webhook or poll)",
+          );
+        }
+
         return {
-          success: true,
+          success: status !== "failed",
           gatewayId: capture.id,
           orderId: isAuthorizationCapture ? undefined : data.id,
           captureId: capture.id,
           authorizationId: isAuthorizationCapture ? p.gatewayPaymentId : undefined,
-          status: capture ? this.mapResourceStatus(capture.status) : this.mapStatus(data.status),
+          status,
           redirectUrl: undefined,
           amount: this.parseAmount(capture.amount, "capture payment"),
           // Include capture ID for downstream refund use
@@ -484,6 +559,11 @@ export class PayPalGateway extends BaseGateway {
   async refundPayment(params: RefundParams): Promise<GatewayRefundResult> {
     return this.executeWithHooks("refundPayment", params, async (p) => {
       const requestId = this.getRequestId(p.idempotencyKey, PAYPAL_PAYMENTS_REQUEST_ID_MAX_LENGTH);
+      this.assertMaxLength(
+        p.reason,
+        PAYPAL_REFUND_NOTE_MAX_LENGTH,
+        "PayPal refund reason (note_to_payer)",
+      );
       return withRetry(async () => {
         // Build refund body
         const body: Record<string, unknown> = {};
@@ -517,15 +597,29 @@ export class PayPalGateway extends BaseGateway {
         const data = await this.parseJsonResponse<PayPalRefundResponse>(response);
 
         if (!response.ok) {
+          // Refunds hit /v2/payments/captures/{id}/refund — order/auth IDs 404 here.
+          if (
+            response.status === 404 ||
+            (data as { name?: string }).name === "RESOURCE_NOT_FOUND"
+          ) {
+            throw new PayPalApiError(
+              "PayPal refund requires capture ID from capturePayment, not order/authorization ID",
+              data,
+              response.status,
+              this.parseRetryAfterSeconds(response.headers),
+            );
+          }
           throw this.createApiError(data, response.status, response.headers);
         }
 
         this.assertRefundResponse(data);
 
+        const status = this.mapRefundStatus(data.status);
         return {
-          success: true,
+          // Terminal failed/cancelled refunds map to failed; do not report success.
+          success: status !== "failed",
           gatewayRefundId: data.id,
-          status: this.mapRefundStatus(data.status),
+          status,
           rawResponse: data,
         };
       }, isRetryableError);
@@ -613,12 +707,14 @@ export class PayPalGateway extends BaseGateway {
         const authorization = data.purchase_units?.[0]?.payments?.authorizations?.[0];
         this.assertPaymentResource(authorization, "authorize payment");
 
+        const status = this.mapResourceStatus(authorization.status);
         return {
-          success: true,
+          // Match capturePayment: terminal failed statuses are not successful outcomes.
+          success: status !== "failed",
           gatewayId: authorization.id,
           orderId: data.id,
           authorizationId: authorization.id,
-          status: this.mapResourceStatus(authorization.status),
+          status,
           redirectUrl: undefined,
           amount: this.parseAmount(authorization.amount, "authorize payment"),
           rawResponse: {
@@ -658,11 +754,9 @@ export class PayPalGateway extends BaseGateway {
       if (hasIssue(["INSUFFICIENT_FUNDS"])) {
         return new InsufficientFundsError(error.message, raw);
       }
-      if (hasIssue(["CARD_EXPIRED"])) {
-        return new AuthenticationError(error.message, raw);
-      }
       if (hasIssue([
         "INSTRUMENT_DECLINED",
+        "CARD_EXPIRED",
         "CARD_BRAND_NOT_SUPPORTED",
         "CARD_COUNTRY_NOT_SUPPORTED",
         "CARD_TYPE_NOT_SUPPORTED",
@@ -688,69 +782,42 @@ export class PayPalGateway extends BaseGateway {
 
 
   /**
-   * Verify PayPal webhook signature
+   * Verify PayPal webhook signature (synchronous).
+   *
+   * PayPal signature verification requires an API round-trip. This method
+   * always throws — use {@link verifyWebhookAsync} or `client.handleWebhook`.
+   *
+   * Prefer the **raw** request body (string / Buffer / Uint8Array). Parsed
+   * objects are accepted by the async path but may fail verification because
+   * re-serialization can change key order and whitespace.
+   *
+   * @throws {InvalidRequestError} Always — sync verification is not supported.
    * @see https://developer.paypal.com/docs/api/webhooks/v1/#verify-webhook-signature
    */
   verifyWebhook(
-    payload: unknown,
-    signatureOrHeaders?: string | Record<string, string>,
-    headers?: Record<string, string>,
+    _payload?: unknown,
+    _signatureOrHeaders?: string | Record<string, string>,
+    _headers?: Record<string, string>,
   ): boolean {
-    if (!this.paypalConfig.webhookId) {
-      this.logger.warn(
-        "[PayPal] Webhook verification failed: webhookId not configured",
-      );
-      return false;
-    }
-
-    // Required headers for verification
-    const normalizedHeaders = this.normalizeHeaders(
-      typeof signatureOrHeaders === "string" ? headers : signatureOrHeaders,
+    throw new InvalidRequestError(
+      "PayPal does not support synchronous webhook verification. Use verifyWebhookAsync or client.handleWebhook",
     );
-    const transmissionId = normalizedHeaders["paypal-transmission-id"];
-    const transmissionTime = normalizedHeaders["paypal-transmission-time"];
-    const transmissionSig =
-      typeof signatureOrHeaders === "string"
-        ? signatureOrHeaders
-        : normalizedHeaders["paypal-transmission-sig"];
-    const certUrl = normalizedHeaders["paypal-cert-url"];
-    const authAlgo = normalizedHeaders["paypal-auth-algo"];
-
-    if (
-      !transmissionId ||
-      !transmissionTime ||
-      !transmissionSig ||
-      !certUrl ||
-      !authAlgo
-    ) {
-      this.logger.warn(
-        "[PayPal] Webhook verification failed: missing required headers",
-      );
-      return false;
-    }
-
-    if (!this.isValidWebhookHeaders({
-      authAlgo,
-      certUrl,
-      transmissionId,
-      transmissionSig,
-      transmissionTime,
-    })) {
-      this.logger.warn(
-        "[PayPal] Webhook verification failed: invalid webhook header values",
-      );
-      return false;
-    }
-
-    this.logger.warn(
-      "[PayPal] Synchronous verification not supported. Use verifyWebhookAsync for proper verification.",
-    );
-    return false;
   }
 
   /**
-   * Verify PayPal webhook signature asynchronously
-   * This is the recommended method for webhook verification
+   * Verify PayPal webhook signature asynchronously.
+   * This is the recommended method for webhook verification.
+   *
+   * **Raw body required for reliable verification**: pass the exact bytes
+   * PayPal signed (string, Buffer, or Uint8Array). The SDK embeds that JSON
+   * text as `webhook_event` without parse→stringify reordering. Already-parsed
+   * objects are still accepted but log a warning — verification may fail.
+   *
+   * Also rejects `paypal-transmission-time` values that are unparseable or
+   * older than 15 minutes (replay protection).
+   *
+   * Certificate URLs are allowlisted to HTTPS hosts under `*.paypal.com` before
+   * any verify API call.
    */
   async verifyWebhookAsync(
     payload: unknown,
@@ -758,10 +825,9 @@ export class PayPalGateway extends BaseGateway {
     headers?: Record<string, string>,
   ): Promise<boolean> {
     if (!this.paypalConfig.webhookId) {
-      this.logger.warn(
-        "[PayPal] Webhook verification failed: webhookId not configured",
+      throw new InvalidRequestError(
+        "paypal.webhookId is required for webhook verification",
       );
-      return false;
     }
 
     const normalizedHeaders = this.normalizeHeaders(
@@ -794,19 +860,26 @@ export class PayPalGateway extends BaseGateway {
       transmissionSig,
       transmissionTime,
     })) {
+      // Reason already logged inside isValidWebhookHeaders when specific.
       this.logger.warn("[PayPal] Invalid webhook header values");
       return false;
     }
 
-    const verifyRequest: PayPalWebhookVerifyRequest = {
-      auth_algo: authAlgo,
-      cert_url: certUrl,
-      transmission_id: transmissionId,
-      transmission_sig: transmissionSig,
-      transmission_time: transmissionTime,
-      webhook_id: this.paypalConfig.webhookId,
-      webhook_event: payload,
-    };
+    const verifyBody = this.buildWebhookVerifyBody({
+      authAlgo,
+      certUrl,
+      transmissionId,
+      transmissionSig,
+      transmissionTime,
+      webhookId: this.paypalConfig.webhookId,
+      payload,
+    });
+    if (verifyBody === undefined) {
+      this.logger.warn(
+        "[PayPal] Webhook verification failed: payload is not a valid JSON object",
+      );
+      return false;
+    }
 
     const response = await withRetry(async () => {
       const verificationResponse = await this.fetchWithAccessToken(
@@ -818,7 +891,7 @@ export class PayPalGateway extends BaseGateway {
             Authorization: `Bearer ${token}`,
           },
           signal: this.createAbortSignal(),
-          body: JSON.stringify(verifyRequest),
+          body: verifyBody,
         }),
       );
 
@@ -845,11 +918,20 @@ export class PayPalGateway extends BaseGateway {
   }
 
   /**
-   * Parse PayPal webhook payload into normalized WebhookEvent
+   * Parse PayPal webhook payload into normalized WebhookEvent.
+   * Accepts a parsed object, or a raw JSON string/Buffer (same shapes as verify).
    */
   parseWebhookEvent(payload: unknown): WebhookEvent {
-    const raw = this.validateWebhookPayload(payload);
-    const status = this.mapWebhookStatus(raw.event_type, raw.resource.status);
+    const raw = this.validateWebhookPayload(this.coerceWebhookPayload(payload));
+
+    // Extract capture ID if available. Refund webhooks identify the refund as
+    // resource.id and link back to the affected capture with rel="up".
+    // Resolved before status mapping so CHECKOUT.ORDER.COMPLETED is only
+    // treated as paid when a capture is present (not auth-only completed orders).
+    const captureId = this.extractWebhookCaptureId(raw);
+    const status = this.mapWebhookStatus(raw.event_type, raw.resource.status, {
+      hasCapture: Boolean(captureId),
+    });
     if (!status) {
       throw new InvalidRequestError(
         `Unsupported PayPal webhook event: ${raw.event_type}`,
@@ -876,9 +958,6 @@ export class PayPalGateway extends BaseGateway {
 
     const paymentId = this.extractWebhookPaymentId(raw);
 
-    // Extract capture ID if available. Refund webhooks identify the refund as
-    // resource.id and link back to the affected capture with rel="up".
-    const captureId = this.extractWebhookCaptureId(raw);
     const gatewayPaymentId = captureId ?? raw.resource.id ?? raw.resource.order_id;
     if (!gatewayPaymentId) {
       throw new GatewayApiError(
@@ -1333,20 +1412,269 @@ export class PayPalGateway extends BaseGateway {
       fields.transmissionSig.length > PAYPAL_WEBHOOK_HEADER_LIMITS.transmissionSig ||
       fields.transmissionTime.length > PAYPAL_WEBHOOK_HEADER_LIMITS.transmissionTime
     ) {
+      this.logger.warn(
+        "[PayPal] Webhook header rejected: value exceeds length limits",
+      );
       return false;
     }
 
     if (!/^[A-Za-z0-9]+$/.test(fields.authAlgo)) {
+      this.logger.warn(
+        "[PayPal] Webhook header rejected: invalid auth_algo format",
+      );
+      return false;
+    }
+
+    if (!this.isAllowedPayPalCertUrl(fields.certUrl)) {
+      this.logger.warn(
+        "[PayPal] Webhook header rejected: cert_url is not an allowed PayPal HTTPS host",
+      );
+      return false;
+    }
+
+    const transmissionMs = new Date(fields.transmissionTime).getTime();
+    if (!Number.isFinite(transmissionMs)) {
+      this.logger.warn(
+        "[PayPal] Webhook header rejected: transmission_time is unparseable",
+      );
+      return false;
+    }
+
+    const ageMs = Date.now() - transmissionMs;
+    if (ageMs > PAYPAL_WEBHOOK_MAX_AGE_MS) {
+      this.logger.warn(
+        `[PayPal] Webhook header rejected: transmission_time is older than ${PAYPAL_WEBHOOK_MAX_AGE_MS / 60_000} minutes (ageMs=${ageMs})`,
+      );
+      return false;
+    }
+
+    // Reject far-future timestamps (clock skew / malformed clocks). Allow a small skew.
+    if (ageMs < -PAYPAL_WEBHOOK_MAX_AGE_MS) {
+      this.logger.warn(
+        "[PayPal] Webhook header rejected: transmission_time is too far in the future",
+      );
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Allow only HTTPS certificate URLs hosted on PayPal domains
+   * (e.g. api.paypal.com, api-m.paypal.com, *.sandbox.paypal.com).
+   */
+  private isAllowedPayPalCertUrl(certUrl: string): boolean {
+    try {
+      const url = new URL(certUrl);
+      if (url.protocol !== "https:") {
+        return false;
+      }
+
+      const host = url.hostname.toLowerCase();
+      return (
+        host === "api.paypal.com" ||
+        host === "api-m.paypal.com" ||
+        host === "api.sandbox.paypal.com" ||
+        host === "api-m.sandbox.paypal.com" ||
+        host.endsWith(".paypal.com")
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Build the verify-webhook-signature POST body.
+   *
+   * For raw string/Buffer/Uint8Array payloads, embeds the original JSON text as
+   * `webhook_event` without parse→stringify (which can break signatures).
+   * For already-parsed objects, falls back to JSON.stringify and warns.
+   *
+   * Returns undefined when the payload cannot be used as a JSON object event.
+   */
+  private buildWebhookVerifyBody(fields: {
+    authAlgo: string;
+    certUrl: string;
+    transmissionId: string;
+    transmissionSig: string;
+    transmissionTime: string;
+    webhookId: string;
+    payload: unknown;
+  }): string | undefined {
+    const rawJsonText = this.extractRawWebhookJsonText(fields.payload);
+    if (rawJsonText !== undefined) {
+      // Trim a copy only for empty/JSON-object validation; embed original text
+      // (including trailing whitespace/newlines) so signature bytes match.
+      const trimmedForValidation = rawJsonText.trim();
+      if (!this.isValidRawWebhookEventJson(trimmedForValidation)) {
+        return undefined;
+      }
+      // Embed original JSON bytes for webhook_event — do not re-serialize or trim.
+      return (
+        '{"auth_algo":' + JSON.stringify(fields.authAlgo) +
+        ',"cert_url":' + JSON.stringify(fields.certUrl) +
+        ',"transmission_id":' + JSON.stringify(fields.transmissionId) +
+        ',"transmission_sig":' + JSON.stringify(fields.transmissionSig) +
+        ',"transmission_time":' + JSON.stringify(fields.transmissionTime) +
+        ',"webhook_id":' + JSON.stringify(fields.webhookId) +
+        ',"webhook_event":' + rawJsonText +
+        "}"
+      );
+    }
+
+    if (
+      !fields.payload ||
+      typeof fields.payload !== "object" ||
+      Array.isArray(fields.payload)
+    ) {
+      return undefined;
+    }
+
+    this.logger.warn(
+      "[PayPal] Webhook verification with a parsed object re-serializes webhook_event; " +
+        "signature verification may fail due to key reordering/whitespace. " +
+        "Prefer the raw request body (string/Buffer/Uint8Array).",
+    );
+
+    const verifyRequest: PayPalWebhookVerifyRequest = {
+      auth_algo: fields.authAlgo,
+      cert_url: fields.certUrl,
+      transmission_id: fields.transmissionId,
+      transmission_sig: fields.transmissionSig,
+      transmission_time: fields.transmissionTime,
+      webhook_id: fields.webhookId,
+      webhook_event: fields.payload,
+    };
+    return JSON.stringify(verifyRequest);
+  }
+
+  /**
+   * Extract UTF-8 JSON text from raw webhook body shapes.
+   * Returns undefined for already-parsed objects / unsupported types.
+   */
+  private extractRawWebhookJsonText(payload: unknown): string | undefined {
+    if (typeof payload === "string") {
+      return payload;
+    }
+
+    if (typeof Buffer !== "undefined" && Buffer.isBuffer(payload)) {
+      return payload.toString("utf8");
+    }
+
+    if (payload instanceof Uint8Array) {
+      return new TextDecoder().decode(payload);
+    }
+
+    return undefined;
+  }
+
+  /**
+   * True when text is a JSON object (starts with `{`) and JSON.parse succeeds.
+   */
+  private isValidRawWebhookEventJson(text: string): boolean {
+    if (!text.startsWith("{")) {
       return false;
     }
 
     try {
-      new URL(fields.certUrl);
+      const parsed = JSON.parse(text) as unknown;
+      return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
     } catch {
       return false;
     }
+  }
 
-    return Number.isFinite(new Date(fields.transmissionTime).getTime());
+  /**
+   * Accept object, JSON string, Buffer, or Uint8Array payloads for parse paths.
+   */
+  private coerceWebhookPayload(payload: unknown): unknown {
+    if (typeof payload === "string") {
+      try {
+        return JSON.parse(payload) as unknown;
+      } catch {
+        throw new GatewayApiError(
+          "Invalid webhook payload: not valid JSON",
+          "paypal",
+          payload,
+        );
+      }
+    }
+
+    if (typeof Buffer !== "undefined" && Buffer.isBuffer(payload)) {
+      try {
+        return JSON.parse(payload.toString("utf8")) as unknown;
+      } catch {
+        throw new GatewayApiError(
+          "Invalid webhook payload: not valid JSON",
+          "paypal",
+          payload,
+        );
+      }
+    }
+
+    if (payload instanceof Uint8Array) {
+      try {
+        return JSON.parse(new TextDecoder().decode(payload)) as unknown;
+      } catch {
+        throw new GatewayApiError(
+          "Invalid webhook payload: not valid JSON",
+          "paypal",
+          payload,
+        );
+      }
+    }
+
+    return payload;
+  }
+
+  /**
+   * Prefer the most recent capture when PayPal returns multiple on an order.
+   * Uses `update_time` / `create_time` when present; otherwise the last array element.
+   */
+  private preferLastCapture<T>(
+    captures:
+      | Array<T & { create_time?: string; update_time?: string }>
+      | undefined,
+  ): (T & { create_time?: string; update_time?: string }) | undefined {
+    if (!captures || captures.length === 0) {
+      return undefined;
+    }
+
+    // noUncheckedIndexedAccess: index access is T | undefined; length check
+    // guarantees at least one element, so fall back only for the type system.
+    let latest = captures[captures.length - 1];
+    if (latest === undefined) {
+      return undefined;
+    }
+    let latestTime = this.captureTimestampMs(latest);
+
+    for (let i = captures.length - 2; i >= 0; i--) {
+      const candidate = captures[i];
+      if (candidate === undefined) {
+        continue;
+      }
+      const candidateTime = this.captureTimestampMs(candidate);
+      // Strict greater-than keeps later array index on ties / missing timestamps.
+      if (
+        Number.isFinite(candidateTime) &&
+        (!Number.isFinite(latestTime) || candidateTime > latestTime)
+      ) {
+        latest = candidate;
+        latestTime = candidateTime;
+      }
+    }
+
+    return latest;
+  }
+
+  private captureTimestampMs(
+    capture: { create_time?: string; update_time?: string },
+  ): number {
+    const raw = capture.update_time ?? capture.create_time;
+    if (!raw) {
+      return Number.NaN;
+    }
+    return new Date(raw).getTime();
   }
 
   private createAbortSignal(): AbortSignal {
@@ -1459,6 +1787,25 @@ export class PayPalGateway extends BaseGateway {
     return customId;
   }
 
+  /**
+   * Enforce PayPal field max lengths client-side before the API call.
+   */
+  private assertMaxLength(
+    value: string | undefined,
+    maxLength: number,
+    label: string,
+  ): void {
+    if (value === undefined) {
+      return;
+    }
+
+    if (value.length > maxLength) {
+      throw new InvalidRequestError(
+        `${label} must be ${maxLength} characters or fewer (got ${value.length})`,
+      );
+    }
+  }
+
   private getCurrencyScale(currency: string): number {
     return PAYPAL_ZERO_DECIMAL_CURRENCIES.has(this.normalizeCurrencyCode(currency))
       ? 0
@@ -1518,8 +1865,11 @@ export class PayPalGateway extends BaseGateway {
     currency_code: string;
     value: string;
   } | undefined {
+    const lastCapture = this.preferLastCapture(
+      raw.resource.purchase_units?.[0]?.payments?.captures,
+    );
     return raw.resource.amount ??
-      raw.resource.purchase_units?.[0]?.payments?.captures?.[0]?.amount ??
+      lastCapture?.amount ??
       raw.resource.purchase_units?.[0]?.amount;
   }
 
@@ -1538,9 +1888,20 @@ export class PayPalGateway extends BaseGateway {
     return !PAYPAL_WEBHOOK_EVENTS_WITHOUT_AMOUNT.has(eventType);
   }
 
+  /**
+   * Resolve a capture ID from a webhook resource when present.
+   * Prefers the last capture when multiple are listed.
+   *
+   * For AUTHORIZATION.* events without a linked capture id, returns undefined —
+   * callers fall back to resource.id (authorization id). That id is **not**
+   * refundable; refunds require a capture ID.
+   */
   private extractWebhookCaptureId(raw: PayPalWebhookPayload): string | undefined {
+    const lastCapture = this.preferLastCapture(
+      raw.resource.purchase_units?.[0]?.payments?.captures,
+    );
     return raw.resource.supplementary_data?.related_ids?.capture_id ??
-      raw.resource.purchase_units?.[0]?.payments?.captures?.[0]?.id ??
+      lastCapture?.id ??
       this.extractLinkedCaptureId(raw.resource.links);
   }
 
@@ -1574,11 +1935,17 @@ export class PayPalGateway extends BaseGateway {
       PAYER_ACTION_REQUIRED: "pending",
     };
 
-    return statusMap[paypalStatus] ?? "pending";
+    const mapped = statusMap[paypalStatus];
+    if (!mapped) {
+      this.logger.warn(`[PayPal] Unmapped order status: ${paypalStatus}`);
+      return "pending";
+    }
+    return mapped;
   }
 
   /**
-   * Map PayPal resource status to unified PaymentStatus
+   * Map PayPal resource status to unified PaymentStatus.
+   * Unknown statuses that look terminal map to `failed` (fail-closed); otherwise `pending`.
    */
   private mapResourceStatus(status: string): PaymentStatus {
     const statusMap: Record<string, PaymentStatus> = {
@@ -1598,7 +1965,16 @@ export class PayPalGateway extends BaseGateway {
       EXPIRED: "cancelled",
     };
 
-    return statusMap[status] ?? "pending";
+    const mapped = statusMap[status];
+    if (!mapped) {
+      const looksTerminal = PAYPAL_TERMINAL_RESOURCE_STATUS_PATTERN.test(status);
+      const fallback: PaymentStatus = looksTerminal ? "failed" : "pending";
+      this.logger.warn(
+        `[PayPal] Unmapped resource status: ${status} (mapped to ${fallback})`,
+      );
+      return fallback;
+    }
+    return mapped;
   }
 
   private mapRefundStatus(status: string): PayPalRefundStatus {
@@ -1609,12 +1985,18 @@ export class PayPalGateway extends BaseGateway {
       CANCELLED: "failed",
     };
 
-    return statusMap[status] ?? "pending";
+    const mapped = statusMap[status];
+    if (!mapped) {
+      this.logger.warn(`[PayPal] Unmapped refund status: ${status}`);
+      return "pending";
+    }
+    return mapped;
   }
 
   private mapWebhookStatus(
     eventType: string,
     resourceStatus?: string,
+    options?: { hasCapture?: boolean },
   ): PaymentStatus | undefined {
     if (eventType === "PAYMENT.CAPTURE.REFUNDED") {
       const resourceMappedStatus = resourceStatus
@@ -1627,9 +2009,14 @@ export class PayPalGateway extends BaseGateway {
         : "refunded";
     }
 
+    // Order completed without a capture (e.g. AUTHORIZE-intent) must not look paid.
+    // Prefer PAYMENT.CAPTURE.COMPLETED as the fulfillment signal.
+    if (eventType === "CHECKOUT.ORDER.COMPLETED") {
+      return options?.hasCapture ? "paid" : "approved";
+    }
+
     const eventStatusMap: Record<string, PaymentStatus> = {
       "CHECKOUT.ORDER.APPROVED": "approved",
-      "CHECKOUT.ORDER.COMPLETED": "paid",
       "CHECKOUT.PAYMENT-APPROVAL.REVERSED": "cancelled",
       "PAYMENT.AUTHORIZATION.CREATED": "authorized",
       "PAYMENT.AUTHORIZATION.CAPTURED": "paid",

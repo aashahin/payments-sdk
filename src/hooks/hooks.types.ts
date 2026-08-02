@@ -23,6 +23,7 @@ export type OperationType =
     | 'confirmStcPayOtp'
     | 'verifyWebhook'
     | 'getPayment'
+    | 'getCheckoutSession'
     | 'createCheckoutSession';
 
 /**
@@ -57,9 +58,17 @@ export interface BeforeHookResult<T = unknown> {
  * Result from an after hook
  */
 export interface AfterHookResult<R = unknown> {
-    /** If false, mark the operation as failed */
+    /**
+     * If false, ignored: later after-handlers still run and the successful
+     * gateway result is still returned (after hooks cannot abort committed
+     * money operations). Money identity fields on `modifiedResult` are restored
+     * from the original gateway result.
+     */
     proceed: boolean;
-    /** Modified result to return instead (optional) */
+    /**
+     * Modified result to return instead (optional). Prefer additive fields
+     * only; money/identity fields are restored from the original result.
+     */
     modifiedResult?: R;
 }
 
@@ -74,12 +83,18 @@ export type BeforeHook<T = unknown> = (
  * After hook function signature.
  *
  * ⚠️ An after hook runs AFTER the gateway operation has already executed and
- * succeeded. Returning `proceed: false` makes the SDK throw a
- * `PaymentAbortedError`, but it does NOT roll back the side effect — for a
- * mutation (capture/refund/void) the money has already moved at the gateway
- * (and, for guarded gateways, the idempotency record is already marked
- * completed). Use after hooks to inspect or transform the result via
- * `modifiedResult`; do not use them to "cancel" a committed operation.
+ * succeeded. Returning `proceed: false` is **ignored** (later after-handlers
+ * still run; the successful result is still returned). Throwing from an after
+ * hook is **isolated** (logged) and does **not** fail the operation or drop
+ * earlier `modifiedResult` values — analytics/side-channel failures must not
+ * become retryable payment failures. Use after hooks to inspect or attach
+ * additive fields via `modifiedResult`; do **not** use them to "cancel" a
+ * committed operation or to change money identity fields (`success`, `status`,
+ * `amount`, `gatewayId`, capture/order/authorization IDs, refund totals, `fee`,
+ * `capturedAmount`, `refundedAmount`, `clientSecret`, etc.) — including via
+ * in-place mutation of the result argument. The gateway freezes those from the
+ * original result (shallow-cloned into hooks so mutation cannot poison the
+ * snapshot). Throws and `proceed: false` are logged and ignored.
  */
 export type AfterHook<T = unknown, R = unknown> = (
     ctx: HookContext<T>,
@@ -134,7 +149,12 @@ export interface PaymentHooks {
     onBefore?: BeforeHook;
     /** Called after any successful operation */
     onAfter?: AfterHook;
-    /** Called when any operation throws an error */
+    /**
+     * Called when the gateway executor/API path throws (mapped error).
+     * Not invoked for before-hook aborts (`PaymentAbortedError` from
+     * `proceed: false`), nor for after-hook `proceed: false` / throws
+     * (those never fail the successful operation).
+     */
     onError?: ErrorHook;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -195,6 +215,10 @@ export interface PaymentHooks {
     onWebhookReceived?: WebhookReceivedHook;
     /** Called after webhook is verified and parsed (payload is trusted here) */
     onWebhookVerified?: WebhookVerifiedHook;
-    /** Called when webhook verification fails */
+    /**
+     * Called when webhook **verification** fails (`isVerified === false` or
+     * verify throws). Not called for pure parse failures after a successful
+     * verify — those rethrow without this hook.
+     */
     onWebhookFailed?: WebhookFailedHook;
 }

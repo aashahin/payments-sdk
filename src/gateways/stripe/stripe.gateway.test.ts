@@ -114,6 +114,23 @@ describe("StripeGateway", () => {
       expect(result).toBe(false);
     });
 
+    it("should reject aged timestamps older than 300 seconds", () => {
+      const payload = JSON.stringify({ id: "evt_aged" });
+      const timestamp = Math.floor(Date.now() / 1000) - 301;
+      const signature = createStripeSignature(payload, timestamp);
+
+      expect(gateway.verifyWebhook(payload, signature)).toBe(false);
+    });
+
+    it("should accept future timestamps (only aged timestamps older than 300s are rejected)", () => {
+      const payload = JSON.stringify({ id: "evt_future" });
+      // 4 minutes in the future — aged check is now - eventTime, so this passes
+      const timestamp = Math.floor(Date.now() / 1000) + 240;
+      const signature = createStripeSignature(payload, timestamp);
+
+      expect(gateway.verifyWebhook(payload, signature)).toBe(true);
+    });
+
     it("should fail closed when webhook secret is missing", () => {
       const insecureGateway = new StripeGateway(
         {
@@ -365,6 +382,7 @@ describe("StripeGateway", () => {
           object: {
             id: "cs_setup_done",
             object: "checkout.session",
+            mode: "setup",
             payment_status: "no_payment_required",
             status: "complete",
             currency: "usd",
@@ -388,6 +406,7 @@ describe("StripeGateway", () => {
           object: {
             id: "cs_setup_done",
             object: "checkout.session",
+            mode: "setup",
             payment_status: "no_payment_required",
             status: "complete",
             setup_intent: "seti_123",
@@ -403,6 +422,30 @@ describe("StripeGateway", () => {
       expect(event.gatewayObjectId).toBe("cs_setup_done");
     });
 
+    it("should not mark payment-mode no_payment_required as setup_completed", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_checkout_free_payment",
+        type: "checkout.session.completed",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "cs_free_payment",
+            object: "checkout.session",
+            mode: "payment",
+            payment_status: "no_payment_required",
+            status: "complete",
+            amount_total: 0,
+            currency: "usd",
+            metadata: { paymentId: "free_order" },
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("pending");
+      expect(event.status).not.toBe("setup_completed");
+    });
+
     it("should use Subscription ID for subscription checkout completion", () => {
       const event = gateway.parseWebhookEvent({
         id: "evt_checkout_subscription",
@@ -412,6 +455,7 @@ describe("StripeGateway", () => {
           object: {
             id: "cs_sub_done",
             object: "checkout.session",
+            mode: "subscription",
             payment_status: "paid",
             status: "complete",
             subscription: "sub_123",
@@ -427,6 +471,34 @@ describe("StripeGateway", () => {
       expect(event.gatewayPaymentId).toBe("sub_123");
       expect(event.gatewayObjectId).toBe("cs_sub_done");
       expect(event.amount).toBe(20);
+    });
+
+    it("should prefer Subscription ID over PaymentIntent when both are present on subscription checkout", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_checkout_sub_with_pi",
+        type: "checkout.session.completed",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "cs_sub_with_pi",
+            object: "checkout.session",
+            mode: "subscription",
+            payment_status: "paid",
+            status: "complete",
+            payment_intent: "pi_first_invoice",
+            subscription: "sub_preferred",
+            amount_total: 2000,
+            currency: "usd",
+            metadata: { paymentId: "order_sub_both" },
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("paid");
+      expect(event.gatewayPaymentId).toBe("sub_preferred");
+      expect(event.gatewayObjectId).toBe("cs_sub_with_pi");
+      expect(event.paymentId).toBe("order_sub_both");
     });
 
     it("should parse JPY webhook amounts without dividing by 100", () => {
@@ -498,7 +570,61 @@ describe("StripeGateway", () => {
 
       expect(event.status).toBe("partially_refunded");
       expect(event.gatewayPaymentId).toBe("pi_partial_refund");
-      expect(event.amount).toBe(12);
+      // amount is the payment/captured total, not cumulative amount_refunded
+      expect(event.amount).toBe(25);
+    });
+
+    it("should treat charge.refunded===true as full refund and prefer amount_captured for amount", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_charge_refunded_flag",
+        type: "charge.refunded",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "ch_flag_full",
+            object: "charge",
+            status: "succeeded",
+            amount: 10000,
+            amount_captured: 6000,
+            amount_refunded: 6000,
+            refunded: true,
+            currency: "usd",
+            payment_intent: "pi_flag_full",
+            metadata: {},
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("refunded");
+      expect(event.amount).toBe(60);
+      expect(event.gatewayPaymentId).toBe("pi_flag_full");
+    });
+
+    it("should compare charge.refunded amount_refunded to amount_captured when present", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_charge_captured_base",
+        type: "charge.refunded",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "ch_captured_base",
+            object: "charge",
+            status: "succeeded",
+            amount: 10000,
+            amount_captured: 6000,
+            amount_refunded: 3000,
+            refunded: false,
+            currency: "usd",
+            payment_intent: "pi_captured_base",
+            metadata: {},
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("partially_refunded");
+      expect(event.amount).toBe(60);
     });
 
     it("should use related PaymentIntent for legacy refund update events", () => {
@@ -604,6 +730,64 @@ describe("StripeGateway", () => {
       expect(event.amount).toBe(25);
     });
 
+    it("should use amount_captured as refund completeness base on expanded charge", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_refund_captured_base",
+        type: "refund.updated",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "re_captured_base",
+            object: "refund",
+            status: "succeeded",
+            amount: 6000,
+            currency: "usd",
+            payment_intent: "pi_refund_captured_base",
+            charge: {
+              id: "ch_refund_captured_base",
+              amount: 10000,
+              amount_captured: 6000,
+              amount_refunded: 6000,
+            },
+            metadata: {},
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("refunded");
+      expect(event.gatewayPaymentId).toBe("pi_refund_captured_base");
+    });
+
+    it("should treat expanded charge.refunded===true as full refund on refund webhooks", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_refund_flag",
+        type: "refund.updated",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "re_flag",
+            object: "refund",
+            status: "succeeded",
+            amount: 1000,
+            currency: "usd",
+            payment_intent: "pi_refund_flag",
+            charge: {
+              id: "ch_refund_flag",
+              amount: 10000,
+              amount_captured: 6000,
+              amount_refunded: 1000,
+              refunded: true,
+            },
+            metadata: {},
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("refunded");
+    });
+
     it("should normalize paid subscription invoice events", () => {
       const event = gateway.parseWebhookEvent({
         id: "evt_invoice_paid",
@@ -634,6 +818,162 @@ describe("StripeGateway", () => {
       expect(event.gatewayObjectId).toBe("in_123");
       expect(event.paymentId).toBe("internal_sub_123");
       expect(event.amount).toBe(30);
+    });
+
+    it("should resolve invoice gatewayPaymentId from top-level subscription when payment_intent is absent", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_invoice_sub_only",
+        type: "invoice.paid",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "in_sub_only",
+            object: "invoice",
+            status: "paid",
+            amount_paid: 1500,
+            total: 1500,
+            currency: "usd",
+            subscription: "sub_top_level",
+            metadata: { paymentId: "internal_sub_only" },
+          },
+        },
+        livemode: false,
+      } as any);
+
+      expect(event.status).toBe("paid");
+      expect(event.gatewayPaymentId).toBe("sub_top_level");
+      expect(event.gatewayObjectId).toBe("in_sub_only");
+      expect(event.paymentId).toBe("internal_sub_only");
+    });
+
+    it("should prefer payment_intent for invoice.paid and keep subscription as gatewaySubscriptionId", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_invoice_basil",
+        type: "invoice.paid",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "in_basil",
+            object: "invoice",
+            status: "paid",
+            amount_paid: 2000,
+            total: 2000,
+            currency: "usd",
+            payment_intent: "pi_legacy",
+            subscription: "sub_legacy_field",
+            parent: {
+              subscription_details: {
+                subscription: "sub_basil_parent",
+                metadata: {},
+              },
+            },
+            metadata: {},
+          },
+        },
+        livemode: false,
+      } as any);
+
+      // Money events: PI for refunds/captures; dual-ID surfaces the subscription.
+      expect(event.gatewayPaymentId).toBe("pi_legacy");
+      expect(event.gatewaySubscriptionId).toBe("sub_basil_parent");
+      expect(event.gatewayObjectId).toBe("in_basil");
+    });
+
+    it("should use payments.data default payment_intent when subscription fields are absent", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_invoice_payments_data",
+        type: "invoice.paid",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "in_payments_data",
+            object: "invoice",
+            status: "paid",
+            amount_paid: 1800,
+            total: 1800,
+            currency: "usd",
+            payments: {
+              data: [
+                {
+                  is_default: true,
+                  payment: { payment_intent: "pi_from_payments_data" },
+                },
+              ],
+            },
+            metadata: {},
+          },
+        },
+        livemode: false,
+      } as any);
+
+      expect(event.gatewayPaymentId).toBe("pi_from_payments_data");
+      expect(event.gatewayObjectId).toBe("in_payments_data");
+    });
+
+    it("should prefer amount_received for succeeded PaymentIntent webhooks", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_pi_amount_received",
+        type: "payment_intent.succeeded",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "pi_amount_received",
+            object: "payment_intent",
+            status: "succeeded",
+            amount: 10000,
+            amount_received: 10000,
+            currency: "usd",
+            metadata: {},
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("paid");
+      expect(event.amount).toBe(100);
+    });
+
+    it("should mark payment_intent.succeeded partial captures as partially_captured", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_pi_partial_capture_webhook",
+        type: "payment_intent.succeeded",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "pi_partial_capture_webhook",
+            object: "payment_intent",
+            status: "succeeded",
+            amount: 10000,
+            amount_received: 6000,
+            currency: "usd",
+            metadata: {},
+          },
+        },
+        livemode: false,
+      });
+
+      expect(event.status).toBe("partially_captured");
+      expect(event.amount).toBe(60);
+    });
+
+    it("should omit currency when Stripe omits it on the webhook object", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_no_currency",
+        type: "customer.subscription.deleted",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "sub_no_currency",
+            object: "subscription",
+            status: "canceled",
+            metadata: {},
+          },
+        },
+        livemode: false,
+      } as any);
+
+      expect(event.currency).toBeUndefined();
+      expect(event.gatewayPaymentId).toBe("sub_no_currency");
     });
 
     it("should normalize failed invoice payment events", () => {
@@ -683,6 +1023,90 @@ describe("StripeGateway", () => {
       expect(event.status).toBe("cancelled");
       expect(event.gatewayPaymentId).toBe("sub_deleted");
       expect(event.paymentId).toBe("internal_deleted_sub");
+    });
+
+    it("should map unpaid subscription status to pending (not cancelled)", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_sub_unpaid",
+        type: "customer.subscription.updated",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "sub_unpaid",
+            object: "subscription",
+            status: "unpaid",
+            currency: "usd",
+            metadata: { paymentId: "internal_unpaid_sub" },
+          },
+        },
+        livemode: false,
+      } as any);
+
+      expect(event.status).toBe("pending");
+      expect(event.gatewayPaymentId).toBe("sub_unpaid");
+      expect(event.paymentId).toBe("internal_unpaid_sub");
+    });
+
+    it("should map trialing subscription status to pending (not paid)", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_sub_trialing",
+        type: "customer.subscription.updated",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "sub_trialing",
+            object: "subscription",
+            status: "trialing",
+            currency: "usd",
+            metadata: { paymentId: "internal_trialing_sub" },
+          },
+        },
+        livemode: false,
+      } as any);
+
+      expect(event.status).toBe("pending");
+      expect(event.gatewayPaymentId).toBe("sub_trialing");
+    });
+
+    it("should map incomplete_expired subscription status to cancelled", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_sub_incomplete_expired",
+        type: "customer.subscription.updated",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "sub_incomplete_expired",
+            object: "subscription",
+            status: "incomplete_expired",
+            currency: "usd",
+            metadata: {},
+          },
+        },
+        livemode: false,
+      } as any);
+
+      expect(event.status).toBe("cancelled");
+    });
+
+    it("should leave unhandled non-payment_intent events pending even for foreign statuses like active", () => {
+      const event = gateway.parseWebhookEvent({
+        id: "evt_unhandled_active",
+        type: "customer.tax_id.created",
+        created: 1623456789,
+        data: {
+          object: {
+            id: "txi_active",
+            object: "tax_id",
+            status: "active",
+            metadata: {},
+          },
+        },
+        livemode: false,
+      } as any);
+
+      // Must not route through PaymentIntent mapStatus (which fails-closed to failed).
+      expect(event.status).toBe("pending");
+      expect(event.status).not.toBe("failed");
     });
 
     it("should reject non-snapshot webhook payloads with a clear error", () => {
@@ -784,22 +1208,35 @@ describe("StripeGateway", () => {
           id: "pi_kwd",
           object: "payment_intent",
           status: "requires_payment_method",
-          amount: 1234,
+          amount: 1230,
           currency: "kwd",
           client_secret: "pi_kwd_secret",
         });
       }) as unknown as typeof fetch;
 
+      // Stripe three-decimal amounts must be divisible by 10 in minor units (1.230 → 1230).
       const result = await gateway.createPayment({
-        amount: 1.234,
+        amount: 1.23,
         currency: "KWD",
         callbackUrl: "https://example.com",
       });
 
       const params = new URLSearchParams(capturedBody);
-      expect(params.get("amount")).toBe("1234");
+      expect(params.get("amount")).toBe("1230");
       expect(params.get("currency")).toBe("kwd");
-      expect(result.amount).toBe(1.234);
+      expect(result.amount).toBe(1.23);
+    });
+
+    it("should reject three-decimal currency amounts not divisible by 10 in minor units", async () => {
+      await expect(
+        gateway.createPayment({
+          amount: 1.234,
+          currency: "KWD",
+          callbackUrl: "https://example.com",
+        }),
+      ).rejects.toThrow(
+        "Stripe KWD minor-unit amounts must be divisible by 10",
+      );
     });
 
     it("should confirm payment if method ID provided", async () => {
@@ -979,6 +1416,18 @@ describe("StripeGateway", () => {
       expect(new URLSearchParams(capturedBody).get("amount")).toBe("100000000");
     });
 
+    it("should reject JPY charges above the 12-digit card maximum", async () => {
+      await expect(
+        gateway.createPayment({
+          amount: 1_000_000_000_000, // 13 digits in minor units (JPY is zero-decimal)
+          currency: "JPY",
+          callbackUrl: "http://cb",
+        }),
+      ).rejects.toThrow(
+        "Stripe JPY amount must be at most 999999999999",
+      );
+    });
+
     it("should accept valid decimal amounts affected by floating point representation", async () => {
       let capturedBody: string = "";
       globalThis.fetch = mock(async (url, opts: RequestInit) => {
@@ -1056,6 +1505,7 @@ describe("StripeGateway", () => {
         return createMockResponse({
           id: "pi_cap",
           status: "succeeded",
+          amount: 10000,
           amount_received: 10000,
           currency: "usd",
         });
@@ -1069,6 +1519,27 @@ describe("StripeGateway", () => {
       expect(new URLSearchParams(capturedBody).toString()).toBe("");
     });
 
+    it("should mark partial capturePayment as partially_captured", async () => {
+      globalThis.fetch = mock(async () =>
+        createMockResponse({
+          id: "pi_cap_partial",
+          status: "succeeded",
+          amount: 10000,
+          amount_received: 6000,
+          currency: "usd",
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await gateway.capturePayment({
+        gatewayPaymentId: "pi_cap_partial",
+        amount: 60,
+        currency: "USD",
+      });
+
+      expect(result.status).toBe("partially_captured");
+      expect(result.amount).toBe(60);
+    });
+
     it("should capture JPY partial amount without multiplying by 100", async () => {
       let capturedBody: string = "";
       globalThis.fetch = mock(async (url, opts: RequestInit) => {
@@ -1076,6 +1547,7 @@ describe("StripeGateway", () => {
         return createMockResponse({
           id: "pi_cap_jpy",
           status: "succeeded",
+          amount: 750,
           amount_received: 750,
           currency: "jpy",
         });
@@ -1091,6 +1563,7 @@ describe("StripeGateway", () => {
         "750",
       );
       expect(result.amount).toBe(750);
+      expect(result.status).toBe("paid");
     });
 
     it("should leave capturable amount limits to Stripe for partial captures", async () => {
@@ -1274,6 +1747,67 @@ describe("StripeGateway", () => {
       expect(params.get("line_items[0][price]")).toBe("price_123");
       expect(params.get("line_items[0][quantity]")).toBe("2");
     });
+
+    it("should reject checkout sessions that include both customerId and customerEmail", async () => {
+      await expect(
+        gateway.createCheckoutSession({
+          amount: 20,
+          currency: "USD",
+          successUrl: "https://success",
+          cancelUrl: "https://cancel",
+          customerId: "cus_123",
+          customerEmail: "test@example.com",
+        }),
+      ).rejects.toThrow(
+        "Stripe Checkout Sessions cannot include both customerId and customerEmail",
+      );
+    });
+
+    it("should auto-generate an Idempotency-Key when the caller omits one", async () => {
+      let capturedKey = "";
+      globalThis.fetch = mock(async (_url, opts: RequestInit) => {
+        capturedKey = new Headers(opts.headers).get("Idempotency-Key") ?? "";
+        return createMockResponse({
+          id: "cs_auto_idem",
+          object: "checkout.session",
+          url: "https://checkout.stripe.com/auto-idem",
+          status: "open",
+          payment_status: "unpaid",
+        });
+      }) as unknown as typeof fetch;
+
+      await gateway.createCheckoutSession({
+        amount: 20,
+        currency: "USD",
+        successUrl: "https://success",
+      });
+
+      expect(capturedKey.length).toBeGreaterThan(0);
+    });
+
+    it("should auto-generate an Idempotency-Key when the caller passes empty or whitespace", async () => {
+      let capturedKey = "";
+      globalThis.fetch = mock(async (_url, opts: RequestInit) => {
+        capturedKey = new Headers(opts.headers).get("Idempotency-Key") ?? "";
+        return createMockResponse({
+          id: "cs_empty_idem",
+          object: "checkout.session",
+          url: "https://checkout.stripe.com/empty-idem",
+          status: "open",
+          payment_status: "unpaid",
+        });
+      }) as unknown as typeof fetch;
+
+      await gateway.createCheckoutSession({
+        amount: 20,
+        currency: "USD",
+        successUrl: "https://success",
+        idempotencyKey: "   ",
+      });
+
+      expect(capturedKey.length).toBeGreaterThan(0);
+      expect(capturedKey.trim().length).toBeGreaterThan(0);
+    });
   });
 
   it("should create checkout session in subscription mode", async () => {
@@ -1356,6 +1890,26 @@ describe("StripeGateway", () => {
 
     const params = new URLSearchParams(capturedBody);
     expect(params.get("line_items[0][price_data][unit_amount]")).toBe("2000");
+  });
+
+  it("should enforce charge limits on major-unit priceData.amount path", async () => {
+    await expect(
+      gateway.createCheckoutSession({
+        successUrl: "https://success",
+        cancelUrl: "https://cancel",
+        lineItems: [
+          {
+            priceData: {
+              currency: "USD",
+              productData: { name: "Huge" },
+              // Above default non-card 8-digit max (99999999 minor = 999999.99 major)
+              amount: 1_000_000,
+            },
+            quantity: 1,
+          },
+        ],
+      }),
+    ).rejects.toThrow("Stripe USD amount must be at most 99999999");
   });
 
   it("should propagate checkout metadata to the PaymentIntent data", async () => {
@@ -1658,6 +2212,28 @@ describe("StripeGateway", () => {
 
     const params = new URLSearchParams(capturedBody);
     expect(params.get("line_items[0][price_data][unit_amount]")).toBe("0");
+  });
+
+  it("should reject three-decimal unitAmount not divisible by 10", async () => {
+    await expect(
+      gateway.createCheckoutSession({
+        successUrl: "https://success",
+        cancelUrl: "https://cancel",
+        lineItems: [
+          {
+            priceData: {
+              currency: "KWD",
+              productData: { name: "Item" },
+              // 1234 minor units is not divisible by 10 (three-decimal rule)
+              unitAmount: 1234,
+            },
+            quantity: 1,
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "Stripe KWD minor-unit amounts must be divisible by 10",
+    );
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1996,6 +2572,137 @@ describe("StripeGateway", () => {
 
       expect(requestedUrl).toContain("expand[]=latest_charge");
       expect(result.refundedAmount).toBe(100);
+      expect(result.status).toBe("refunded");
+    });
+
+    it("should mark fully refunded PaymentIntents as refunded", async () => {
+      globalThis.fetch = mock(async () =>
+        createMockResponse({
+          id: "pi_full_refund",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 5000,
+          amount_received: 5000,
+          currency: "usd",
+          latest_charge: {
+            id: "ch_full_refund",
+            amount_refunded: 5000,
+            currency: "usd",
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await gateway.getPayment({
+        gatewayPaymentId: "pi_full_refund",
+      });
+
+      expect(result.status).toBe("refunded");
+      expect(result.amount).toBe(50);
+      expect(result.refundedAmount).toBe(50);
+    });
+
+    it("should mark partial refunds as partially_refunded", async () => {
+      globalThis.fetch = mock(async () =>
+        createMockResponse({
+          id: "pi_partial_refund",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 10000,
+          amount_received: 10000,
+          currency: "usd",
+          latest_charge: {
+            id: "ch_partial_refund",
+            amount_refunded: 2500,
+            currency: "usd",
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await gateway.getPayment({
+        gatewayPaymentId: "pi_partial_refund",
+      });
+
+      expect(result.status).toBe("partially_refunded");
+      expect(result.amount).toBe(100);
+      expect(result.refundedAmount).toBe(25);
+    });
+
+    it("should prefer amount_received and mark partial captures as partially_captured", async () => {
+      globalThis.fetch = mock(async () =>
+        createMockResponse({
+          id: "pi_partial_capture",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 10000,
+          amount_received: 6000,
+          currency: "usd",
+          latest_charge: {
+            id: "ch_partial_capture",
+            amount_refunded: 0,
+            currency: "usd",
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await gateway.getPayment({
+        gatewayPaymentId: "pi_partial_capture",
+      });
+
+      expect(result.status).toBe("partially_captured");
+      expect(result.amount).toBe(60);
+    });
+
+    it("should prefer refund status over partial capture when both apply", async () => {
+      globalThis.fetch = mock(async () =>
+        createMockResponse({
+          id: "pi_partial_then_refund",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 10000,
+          amount_received: 6000,
+          currency: "usd",
+          latest_charge: {
+            id: "ch_partial_then_refund",
+            amount_refunded: 6000,
+            currency: "usd",
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await gateway.getPayment({
+        gatewayPaymentId: "pi_partial_then_refund",
+      });
+
+      // Full refund of captured base (amount_received=6000) overrides partially_captured.
+      // amount=10000, amount_received=6000, amount_refunded=6000 => refunded
+      expect(result.status).toBe("refunded");
+      expect(result.amount).toBe(60);
+      expect(result.refundedAmount).toBe(60);
+    });
+
+    it("should mark full refund of captured base using amount_captured when amount_received absent", async () => {
+      globalThis.fetch = mock(async () =>
+        createMockResponse({
+          id: "pi_refund_via_captured",
+          object: "payment_intent",
+          status: "succeeded",
+          amount: 10000,
+          currency: "usd",
+          latest_charge: {
+            id: "ch_refund_via_captured",
+            amount_captured: 6000,
+            amount_refunded: 6000,
+            currency: "usd",
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await gateway.getPayment({
+        gatewayPaymentId: "pi_refund_via_captured",
+      });
+
+      expect(result.status).toBe("refunded");
+      expect(result.refundedAmount).toBe(60);
     });
   });
 
@@ -2032,6 +2739,71 @@ describe("StripeGateway", () => {
       await expect(
         gateway.getCheckoutSession({ sessionId: "cs_bad?expand[]=payment_intent" }),
       ).rejects.toThrow("Stripe Checkout Session ID must start with cs_");
+    });
+  });
+
+  describe("error mapping", () => {
+    it("should map authentication_required to CardDeclinedError (not AuthenticationError)", async () => {
+      const { CardDeclinedError, AuthenticationError } = await import(
+        "../../errors"
+      );
+
+      globalThis.fetch = mock(async () =>
+        createMockResponse(
+          {
+            error: {
+              message: "This payment requires authentication.",
+              type: "card_error",
+              code: "authentication_required",
+            },
+          },
+          false,
+          402,
+        ),
+      ) as unknown as typeof fetch;
+
+      let caught: unknown;
+      try {
+        await gateway.createPayment({
+          amount: 10,
+          currency: "USD",
+          callbackUrl: "https://example.com",
+          stripePaymentMethodId: "pm_card_authenticationRequired",
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(CardDeclinedError);
+      expect(caught).not.toBeInstanceOf(AuthenticationError);
+      expect((caught as Error).message).toBe(
+        "This payment requires authentication.",
+      );
+    });
+
+    it("should map HTTP 401 to AuthenticationError", async () => {
+      const { AuthenticationError } = await import("../../errors");
+
+      globalThis.fetch = mock(async () =>
+        createMockResponse(
+          {
+            error: {
+              message: "Invalid API Key provided",
+              type: "invalid_request_error",
+            },
+          },
+          false,
+          401,
+        ),
+      ) as unknown as typeof fetch;
+
+      await expect(
+        gateway.createPayment({
+          amount: 10,
+          currency: "USD",
+          callbackUrl: "https://example.com",
+        }),
+      ).rejects.toThrow(AuthenticationError);
     });
   });
 

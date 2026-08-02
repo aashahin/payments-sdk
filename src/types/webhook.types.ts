@@ -18,6 +18,12 @@ export interface WebhookEvent {
     gatewayPaymentId: string;
     /** Gateway object ID that emitted the event when different from the payment ID */
     gatewayObjectId?: string | undefined;
+    /**
+     * Related subscription ID when the money-bearing ID is a PaymentIntent (or
+     * other non-subscription object). Stripe invoice money events may set
+     * `gatewayPaymentId` to `pi_...` and this field to `sub_...`.
+     */
+    gatewaySubscriptionId?: string | undefined;
     /** Gateway token emitted by setup/tokenization events, when applicable */
     gatewayToken?: string | undefined;
     /** Normalized payment status */
@@ -138,6 +144,8 @@ export interface PayPalWebhookPayload {
                         currency_code: string;
                         value: string;
                     };
+                    create_time?: string;
+                    update_time?: string;
                 }>;
             };
         }>;

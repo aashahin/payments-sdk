@@ -72,6 +72,14 @@ const SAFE_KEY_ALLOWLIST = new Set([
   "eventname",
   "eventtype",
   "status",
+  // Operational payment identifiers (would otherwise match "key"/"authorization"/etc.)
+  "idempotencykey",
+  "authorizationid",
+  "gatewaypaymentid",
+  "gatewayid",
+  "captureid",
+  "orderid",
+  "paymentid",
 ]);
 
 const REDACTED = "[REDACTED]";

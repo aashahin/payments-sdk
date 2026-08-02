@@ -12,6 +12,7 @@ import type {
   GatewayRefundResult,
   MoyasarCreatePaymentParams,
   PaymobCreatePaymentParams,
+  PayPalCreatePaymentParams,
   PaymentStatus,
 } from "./types/payment.types";
 import type { WebhookEvent } from "./types/webhook.types";
@@ -23,7 +24,13 @@ import { MoyasarGateway } from "./gateways/moyasar/moyasar.gateway";
 import { PayPalGateway } from "./gateways/paypal/paypal.gateway";
 import { PaymobGateway } from "./gateways/paymob/paymob.gateway";
 import { StripeGateway } from "./gateways/stripe/stripe.gateway";
-import { GatewayNotConfiguredError, InvalidWebhookError } from "./errors";
+import {
+  GatewayNotConfiguredError,
+  InvalidRequestError,
+  InvalidWebhookError,
+  OperationNotSupportedError,
+} from "./errors";
+import { createRedactingLogger, noopLogger, type Logger } from "./utils/logger";
 
 /**
  * Main payment client that orchestrates gateway operations with lifecycle hooks
@@ -53,10 +60,18 @@ export class PaymentClient {
   private readonly gateways = new Map<GatewayName, PaymentGateway>();
   private readonly hooksManager: HooksManager;
   private readonly defaultGateway: GatewayName | undefined;
+  private readonly logger: Logger;
 
   constructor(config: PaymentClientConfig) {
-    this.hooksManager = new HooksManager(config.hooks);
     this.defaultGateway = config.defaultGateway;
+    this.logger = config.logger
+      ? createRedactingLogger(config.logger)
+      : noopLogger;
+    // Pass redacting logger so after-hook isolation (proceed:false / throws) is observable
+    this.hooksManager = new HooksManager(config.hooks, this.logger);
+
+    // Fail fast on empty required secrets before constructing gateways
+    PaymentClient.assertGatewayCredentials(config);
 
     const logger = config.logger;
 
@@ -87,6 +102,64 @@ export class PaymentClient {
         "stripe",
         new StripeGateway(config.stripe, this.hooksManager, logger),
       );
+    }
+
+    // Fail fast when defaultGateway is set but that gateway was never configured
+    if (
+      this.defaultGateway !== undefined &&
+      !this.gateways.has(this.defaultGateway)
+    ) {
+      throw new InvalidRequestError(
+        `defaultGateway '${this.defaultGateway}' is not configured`,
+      );
+    }
+  }
+
+  /**
+   * Require non-empty secrets when a gateway config object is present.
+   * Webhook secrets are optional and not checked here.
+   */
+  private static assertGatewayCredentials(config: PaymentClientConfig): void {
+    const nonEmpty = (value: unknown): value is string =>
+      typeof value === "string" && value.trim().length > 0;
+
+    if (config.moyasar !== undefined) {
+      if (!nonEmpty(config.moyasar.secretKey)) {
+        throw new InvalidRequestError(
+          "moyasar.secretKey must be a non-empty string",
+        );
+      }
+    }
+
+    if (config.stripe !== undefined) {
+      if (!nonEmpty(config.stripe.secretKey)) {
+        throw new InvalidRequestError(
+          "stripe.secretKey must be a non-empty string",
+        );
+      }
+    }
+
+    if (config.paypal !== undefined) {
+      if (!nonEmpty(config.paypal.clientId)) {
+        throw new InvalidRequestError(
+          "paypal.clientId must be a non-empty string",
+        );
+      }
+      if (!nonEmpty(config.paypal.clientSecret)) {
+        throw new InvalidRequestError(
+          "paypal.clientSecret must be a non-empty string",
+        );
+      }
+    }
+
+    if (config.paymob !== undefined) {
+      const hasSecretKey = nonEmpty(config.paymob.secretKey);
+      const hasApiKey = nonEmpty(config.paymob.apiKey);
+      if (!hasSecretKey && !hasApiKey) {
+        throw new InvalidRequestError(
+          "paymob requires secretKey or apiKey as a non-empty string",
+        );
+      }
     }
   }
 
@@ -130,15 +203,24 @@ export class PaymentClient {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Create a payment using the specified or default gateway
+   * Create a payment using the specified or default gateway.
+   *
+   * Single-arg calls use {@link CreatePaymentParams} (callbackUrl required at the
+   * type level). Gateway-specific overloads relax fields where the provider allows
+   * (e.g. Stripe callbackUrl optional when calling with gateway: "stripe").
    */
-  async createPayment(params: StripeCreatePaymentParams): Promise<GatewayPaymentResult>;
   async createPayment(params: StripeCreatePaymentParams, gateway: "stripe"): Promise<GatewayPaymentResult>;
   async createPayment(params: MoyasarCreatePaymentParams, gateway: "moyasar"): Promise<GatewayPaymentResult>;
+  async createPayment(params: PayPalCreatePaymentParams, gateway: "paypal"): Promise<GatewayPaymentResult>;
   async createPayment(params: PaymobCreatePaymentParams, gateway: "paymob"): Promise<GatewayPaymentResult>;
   async createPayment(params: CreatePaymentParams, gateway?: GatewayName): Promise<GatewayPaymentResult>;
   async createPayment(
-    params: CreatePaymentParams | StripeCreatePaymentParams | MoyasarCreatePaymentParams | PaymobCreatePaymentParams,
+    params:
+      | CreatePaymentParams
+      | StripeCreatePaymentParams
+      | MoyasarCreatePaymentParams
+      | PayPalCreatePaymentParams
+      | PaymobCreatePaymentParams,
     gateway?: GatewayName,
   ): Promise<GatewayPaymentResult> {
     const gw = this.resolveGateway(gateway);
@@ -169,6 +251,7 @@ export class PaymentClient {
 
   /**
    * Void/cancel an authorized payment before capture
+   * @throws {OperationNotSupportedError} If the gateway does not implement voidPayment
    */
   async voidPayment(
     params: VoidParams,
@@ -176,16 +259,14 @@ export class PaymentClient {
   ): Promise<GatewayPaymentResult> {
     const gw = this.resolveGateway(gateway);
     if (!gw.voidPayment) {
-      throw new GatewayNotConfiguredError(
-        `${gw.name} does not support voidPayment`
-      );
+      throw new OperationNotSupportedError(gw.name, "voidPayment");
     }
     return gw.voidPayment(params);
   }
 
   /**
    * Retrieve payment details from a gateway
-   * @throws {GatewayNotConfiguredError} If gateway doesn't support getPayment
+   * @throws {OperationNotSupportedError} If the gateway does not implement getPayment
    */
   async getPayment(
     params: GetPaymentParams,
@@ -193,15 +274,14 @@ export class PaymentClient {
   ): Promise<GatewayPaymentResult> {
     const gw = this.resolveGateway(gateway);
     if (!gw.getPayment) {
-      throw new GatewayNotConfiguredError(
-        `${gw.name} does not support getPayment`
-      );
+      throw new OperationNotSupportedError(gw.name, "getPayment");
     }
     return gw.getPayment(params);
   }
 
   /**
    * Get current status of a payment from a gateway
+   * @throws {OperationNotSupportedError} If the gateway does not implement getPaymentStatus
    */
   async getPaymentStatus(
     gatewayId: string,
@@ -209,9 +289,7 @@ export class PaymentClient {
   ): Promise<PaymentStatus> {
     const gw = this.resolveGateway(gateway);
     if (!gw.getPaymentStatus) {
-      throw new GatewayNotConfiguredError(
-        `${gw.name} does not support getPaymentStatus`
-      );
+      throw new OperationNotSupportedError(gw.name, "getPaymentStatus");
     }
     return gw.getPaymentStatus(gatewayId);
   }
@@ -223,12 +301,19 @@ export class PaymentClient {
   /**
    * Handle an incoming webhook from a payment gateway
    *
+   * Stages:
+   * 1. `onWebhookReceived` (untrusted payload; failures logged, never block)
+   * 2. Signature / authenticity verification — failures call `onWebhookFailed`
+   * 3. Parse / normalize — failures throw without calling `onWebhookFailed`
+   * 4. `onWebhookVerified` (trusted event; failures rethrown for provider retry)
+   *
    * @param gateway - Which gateway sent the webhook
    * @param payload - Raw webhook payload
    * @param signatureOrHeaders - Optional signature, or headers for gateways like PayPal
    * @param headers - Optional headers when signature is passed separately
    * @returns Normalized WebhookEvent
-   * @throws {InvalidWebhookError} If verification fails
+   * @throws {InvalidWebhookError} If verification fails, or parse fails with an untyped error
+   * @throws {InvalidRequestError} If a gateway parse path rejects the payload shape
    */
   async handleWebhook(
     gateway: GatewayName,
@@ -242,29 +327,81 @@ export class PaymentClient {
     // ⚠️ This fires on the UNVERIFIED payload (verification happens below), so
     // onWebhookReceived must stay side-effect-free (logging/metrics only).
     // State-changing logic belongs in onWebhookVerified, which only runs after
-    // verification succeeds.
-    await this.hooksManager.runWebhookReceived(gateway, payload);
-
-    // Verify webhook authenticity
-    const signature =
-      typeof signatureOrHeaders === "string" ? signatureOrHeaders : undefined;
-    const verificationHeaders =
-      typeof signatureOrHeaders === "string" ? headers : signatureOrHeaders;
-    const isVerified = gw.verifyWebhookAsync
-      ? await gw.verifyWebhookAsync(payload, signatureOrHeaders, headers)
-      : gw.verifyWebhook(payload, signature, verificationHeaders);
-
-    if (!isVerified) {
-      const error = new InvalidWebhookError("Webhook verification failed");
-      await this.hooksManager.runWebhookFailed(payload, error);
-      throw error;
+    // verification succeeds. Failures here are logged and never block verify.
+    try {
+      await this.hooksManager.runWebhookReceived(gateway, payload);
+    } catch (hookError) {
+      this.logger.error("onWebhookReceived hook failed", {
+        gateway,
+        hookError:
+          hookError instanceof Error ? hookError.message : String(hookError),
+      });
     }
 
-    // Parse and normalize the webhook event
-    const event = gw.parseWebhookEvent(payload);
+    // ── Stage: verify (onWebhookFailed only for verification failures) ──────
+    try {
+      const signature =
+        typeof signatureOrHeaders === "string" ? signatureOrHeaders : undefined;
+      const verificationHeaders =
+        typeof signatureOrHeaders === "string" ? headers : signatureOrHeaders;
+      const isVerified = gw.verifyWebhookAsync
+        ? await gw.verifyWebhookAsync(payload, signatureOrHeaders, headers)
+        : gw.verifyWebhook(payload, signature, verificationHeaders);
 
-    // Notify hooks that webhook was verified
-    await this.hooksManager.runWebhookVerified(event);
+      if (!isVerified) {
+        throw new InvalidWebhookError("Webhook verification failed");
+      }
+    } catch (error) {
+      const primaryError =
+        error instanceof Error ? error : new Error(String(error));
+
+      // Secondary hook failures must not replace the primary verification error
+      try {
+        await this.hooksManager.runWebhookFailed(payload, primaryError);
+      } catch (hookError) {
+        this.logger.error("onWebhookFailed hook failed", {
+          gateway,
+          hookError:
+            hookError instanceof Error ? hookError.message : String(hookError),
+          originalError: primaryError.message,
+        });
+      }
+
+      throw primaryError;
+    }
+
+    // ── Stage: parse (separate from verify; do not call onWebhookFailed) ────
+    let event: WebhookEvent;
+    try {
+      event = gw.parseWebhookEvent(payload);
+    } catch (error) {
+      if (
+        error instanceof InvalidWebhookError ||
+        error instanceof InvalidRequestError
+      ) {
+        throw error;
+      }
+      throw new InvalidWebhookError(
+        `Webhook parse failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    // Verified path: onWebhookVerified failures are rethrown so the HTTP
+    // handler can return 5xx and the provider will retry. Log first so the
+    // failure is visible even if the caller swallows the error. (Unlike
+    // onWebhookFailed, we do not swallow — fulfillment must not silently skip.)
+    try {
+      await this.hooksManager.runWebhookVerified(event);
+    } catch (hookError) {
+      this.logger.error("onWebhookVerified hook failed", {
+        gateway,
+        hookError:
+          hookError instanceof Error ? hookError.message : String(hookError),
+      });
+      throw hookError;
+    }
 
     return event;
   }
@@ -289,12 +426,16 @@ export class PaymentClient {
 
   /**
    * Resolve which gateway to use
+   * @throws {InvalidRequestError} If neither an explicit nor a default gateway is available
+   * @throws {GatewayNotConfiguredError} If the resolved gateway is not configured
    */
   private resolveGateway(gateway?: GatewayName): PaymentGateway {
     const name = gateway ?? this.defaultGateway;
 
     if (!name) {
-      throw new Error("No gateway specified and no default gateway configured");
+      throw new InvalidRequestError(
+        "No gateway specified and no default gateway configured",
+      );
     }
 
     return this.gateway(name);

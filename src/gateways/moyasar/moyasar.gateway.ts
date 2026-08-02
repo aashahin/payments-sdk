@@ -12,6 +12,7 @@ import type {
   GatewayRefundResult,
   MoyasarConfirmStcPayOtpParams,
   MoyasarCreatePaymentParams,
+  PaymentNextAction,
   PaymentStatus,
   RefundParams,
   VoidParams,
@@ -33,6 +34,7 @@ import {
 import {
   GatewayApiError,
   AuthenticationError,
+  CardDeclinedError,
   RateLimitError,
   InvalidRequestError,
   NetworkError,
@@ -52,9 +54,19 @@ import type { Logger } from "../../utils/logger";
 import { getCurrencyExponent } from "../../utils/currency";
 
 /**
- * Moyasar has no native idempotency for capture/refund/void, so transient
- * failures are only retried when an idempotency key (and dedupe store) make a
- * retry safe. Network errors and 5xx/429 responses are considered transient.
+ * Classify transient Moyasar transport/API failures (network, 5xx, 429).
+ *
+ * Used for:
+ * - `createPayment` / `getPayment` `withRetry` predicates (safe GET always;
+ *   create only when `given_id`/idempotencyKey is present).
+ * - `runIdempotentMutation`: after capture/refund/void fails, decide whether to
+ *   mark the store key `unknown` (indeterminate) vs clear it (definite 4xx).
+ *
+ * Capture/refund/void themselves are **not** auto-retried by `withRetry`.
+ * Moyasar has no native mutation idempotency; a lost response after a successful
+ * void/refund could double-apply if the SDK retried. Configure
+ * `idempotencyStore` + pass `idempotencyKey` so **callers** can safely retry
+ * after definite failures (or resolve `unknown` via `getPayment` first).
  */
 function isMoyasarRetryableError(error: unknown): boolean {
   if (error instanceof NetworkError) {
@@ -224,10 +236,23 @@ export class MoyasarGateway extends BaseGateway {
    * A store without `reserve()` falls back to a non-atomic get-then-set, which
    * two concurrent retries of the same mutation can both pass — risking a double
    * refund. Warn loudly so this isn't relied on for cross-worker safety.
+   *
+   * With no store at all, capture/refund/void are completely unguarded — a
+   * multi-worker production deployment will double-apply on retry.
    */
   private warnIfIdempotencyStoreUnsafe(): void {
     const store = this.moyasarConfig.idempotencyStore;
-    if (store && !store.reserve) {
+    if (!store) {
+      this.logger.warn(
+        "[Moyasar] No idempotencyStore configured. Capture, refund, and void " +
+          "have no native Moyasar idempotency; network retries or multi-worker " +
+          "races can apply the same mutation twice (e.g. double refund). " +
+          "Configure moyasar.idempotencyStore (preferably with atomic reserve()) " +
+          "for production multi-worker safety.",
+      );
+      return;
+    }
+    if (!store.reserve) {
       this.logger.warn(
         "[Moyasar] idempotencyStore does not implement atomic reserve(). " +
           "Concurrent retries of the same refund/capture/void can race and apply " +
@@ -240,8 +265,13 @@ export class MoyasarGateway extends BaseGateway {
   /**
    * Guard a non-idempotent mutation (refund/capture/void) with an injectable
    * dedupe store, keyed by idempotencyKey + operation + paymentId. Moyasar has
-   * no native idempotency for these endpoints, so this prevents a retried
-   * mutation from being applied twice (e.g. a double refund).
+   * no native idempotency for these endpoints, so this prevents a **caller**
+   * retry from applying the mutation twice (e.g. a double refund).
+   *
+   * This does **not** wrap the HTTP call in `withRetry`. Auto-retry after a
+   * network blip is unsafe: the first request may already have succeeded on
+   * Moyasar. The store only enables safe **caller** retries (and caches
+   * completed results).
    *
    * Behavior:
    * - No idempotencyKey or no store configured: runs once, unguarded.
@@ -250,7 +280,8 @@ export class MoyasarGateway extends BaseGateway {
    *   a duplicate mutation.
    * - Definite failure (4xx, validation): clears the reservation so the caller
    *   can safely retry. Transient/indeterminate failures (network, 5xx) keep an
-   *   "unknown" marker so the operation is never silently re-applied.
+   *   "unknown" marker so the operation is never silently re-applied — resolve
+   *   via `getPayment` before retrying with the same key.
    */
   private async runIdempotentMutation<R>(
     operation: "capturePayment" | "refundPayment" | "voidPayment",
@@ -260,7 +291,18 @@ export class MoyasarGateway extends BaseGateway {
     executor: () => Promise<R>,
   ): Promise<R> {
     const store: IdempotencyStore | undefined = this.moyasarConfig.idempotencyStore;
-    if (!idempotencyKey || !store) {
+    if (!store) {
+      if (idempotencyKey) {
+        this.logger.warn(
+          `[Moyasar] ${operation} was called with idempotencyKey but no ` +
+            "idempotencyStore is configured; the key is ignored and the mutation " +
+            "runs unguarded. Configure moyasar.idempotencyStore to protect " +
+            "capture/refund/void across retries and workers.",
+        );
+      }
+      return executor();
+    }
+    if (!idempotencyKey) {
       return executor();
     }
 
@@ -351,9 +393,14 @@ export class MoyasarGateway extends BaseGateway {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Create a payment using Moyasar's Payment API
-   * Supports: creditcard, token, applepay, samsungpay, stcpay
+   * Create a payment using Moyasar's Payment API.
+   * Supports: creditcard, token, applepay, samsungpay, stcpay.
    * @see https://docs.moyasar.com/api/payments/01-create-payment
+   * @note `success: true` only means the payment is not mapped to `failed`
+   *   (provider `failed`/`abandoned`, or an unmapped status). An `initiated`
+   *   payment maps to `success: true` with `status: 'pending'`. Always check
+   *   `status` (and complete 3DS/OTP) before fulfillment — fulfill only on
+   *   `paid` (or `authorized` for auth-only holds).
    */
   async createPayment(params: CreatePaymentParams): Promise<GatewayPaymentResult>;
   async createPayment(params: MoyasarCreatePaymentParams): Promise<GatewayPaymentResult>;
@@ -373,9 +420,10 @@ export class MoyasarGateway extends BaseGateway {
       }
 
       const metadata = this.buildPaymentMetadata(p);
+      const currency = p.currency.toUpperCase();
       const requestBody: Record<string, unknown> = {
-        amount: this.toMinorUnits(p.amount, p.currency),
-        currency: p.currency,
+        amount: this.toMinorUnits(p.amount, currency),
+        currency,
         description: p.description ?? "Payment",
         source: sourcePayload,
       };
@@ -398,8 +446,14 @@ export class MoyasarGateway extends BaseGateway {
         requestBody.apply_coupon = p.applyCoupon;
       }
 
+      // Split amounts are major units in the public API; Moyasar expects minor ints.
       if ("splits" in p && p.splits !== undefined) {
-        requestBody.splits = p.splits;
+        requestBody.splits = p.splits.map((split) => ({
+          ...split,
+          amount: this.toMinorUnits(split.amount, currency, {
+            allowNonPositive: true,
+          }),
+        }));
       }
 
       if ("recipient" in p && p.recipient !== undefined) {
@@ -570,8 +624,15 @@ export class MoyasarGateway extends BaseGateway {
             }),
           };
         }
-        // Decrypted Apple Pay token (DPAN)
+        // Decrypted Apple Pay token (DPAN). Moyasar's ApplePayDecryptTokenRequest
+        // has no `manual` field — fail closed rather than silently auto-capturing
+        // when the caller asked for authorize-only.
         if ("dpan" in source) {
+          if (manual === true) {
+            throw new InvalidRequestError(
+              "Moyasar decrypted Apple Pay (DPAN) does not support manual capture (capture: false). Use an encrypted Apple Pay token source for authorize-only payments, or omit capture: false for auto-capture.",
+            );
+          }
           return {
             type: "applepay",
             number: source.dpan,
@@ -583,10 +644,8 @@ export class MoyasarGateway extends BaseGateway {
             ...(source.eci && { eci: source.eci }),
           };
         }
-        throw new GatewayApiError(
+        throw new InvalidRequestError(
           "Invalid Apple Pay source: must have either token or dpan",
-          "moyasar",
-          { code: "INVALID_APPLEPAY_SOURCE" },
         );
 
       case "samsungpay":
@@ -601,6 +660,13 @@ export class MoyasarGateway extends BaseGateway {
         };
 
       case "stcpay":
+        // STC Pay has no `manual` capture field — fail closed rather than
+        // silently auto-capturing when the caller asked for authorize-only.
+        if (manual === true) {
+          throw new InvalidRequestError(
+            "Moyasar STC Pay does not support manual capture (capture: false). Omit capture: false; STC Pay captures after successful OTP confirmation.",
+          );
+        }
         return {
           type: "stcpay",
           mobile: source.mobile,
@@ -620,9 +686,12 @@ export class MoyasarGateway extends BaseGateway {
   }
 
   /**
-   * Capture an authorized payment
+   * Capture an authorized payment.
    * @see https://docs.moyasar.com/api/payments/06-capture-payment
-   * @note Moyasar auto-captures by default, so this is only needed for manual capture flows
+   * @note Moyasar auto-captures by default; use this only for manual-capture flows.
+   * @note Not auto-retried by `withRetry`. Pass `idempotencyKey` with
+   *   `moyasar.idempotencyStore` so **caller** retries are deduped (Moyasar has
+   *   no native capture idempotency).
    */
   async capturePayment(params: CaptureParams): Promise<GatewayPaymentResult> {
     return this.executeWithHooks("capturePayment", params, async (p) => {
@@ -638,11 +707,12 @@ export class MoyasarGateway extends BaseGateway {
         requestBody.amount = this.toMinorUnits(p.amount, p.currency);
       }
 
+      const hasBody = Object.keys(requestBody).length > 0;
       const init: RequestInit = {
         method: "POST",
-        headers: this.getHeaders(),
+        headers: this.getHeaders({ contentType: hasBody }),
       };
-      if (Object.keys(requestBody).length > 0) {
+      if (hasBody) {
         init.body = JSON.stringify(requestBody);
       }
 
@@ -665,9 +735,12 @@ export class MoyasarGateway extends BaseGateway {
   }
 
   /**
-   * Refund a payment (full or partial)
+   * Refund a payment (full or partial).
    * @see https://docs.moyasar.com/api/payments/05-refund-payment
-   * @note Moyasar returns the updated payment object, not a separate refund entity
+   * @note Moyasar returns the updated payment object, not a separate refund entity.
+   * @note Not auto-retried by `withRetry`. Pass `idempotencyKey` with
+   *   `moyasar.idempotencyStore` so **caller** retries are deduped (Moyasar has
+   *   no native refund idempotency).
    */
   async refundPayment(params: RefundParams): Promise<GatewayRefundResult> {
     return this.executeWithHooks("refundPayment", params, async (p) => {
@@ -683,11 +756,12 @@ export class MoyasarGateway extends BaseGateway {
         requestBody.amount = this.toMinorUnits(p.amount, p.currency);
       }
 
+      const hasBody = Object.keys(requestBody).length > 0;
       const init: RequestInit = {
         method: "POST",
-        headers: this.getHeaders(),
+        headers: this.getHeaders({ contentType: hasBody }),
       };
-      if (Object.keys(requestBody).length > 0) {
+      if (hasBody) {
         init.body = JSON.stringify(requestBody);
       }
 
@@ -704,13 +778,22 @@ export class MoyasarGateway extends BaseGateway {
           )) as MoyasarPaymentResponse | MoyasarErrorResponse;
 
           const payment = data as MoyasarPaymentResponse;
+          const paymentStatus = this.resolvePaymentStatus(payment);
 
           // Moyasar returns the payment object with updated refund info.
-          // There's no separate refund ID - refund is tracked on the payment.
+          // There's no separate refund ID — refund is tracked on the payment.
+          // Prefer "completed" on HTTP 2xx when the returned payment reflects a
+          // refund (full/partial), not only when provider status === "refunded".
+          const reflectsRefund =
+            payment.refunded > 0 ||
+            paymentStatus === "refunded" ||
+            paymentStatus === "partially_refunded" ||
+            payment.status === "refunded";
+
           return {
             success: true,
             gatewayRefundId: payment.id, // Payment ID (refund is tracked on payment)
-            status: payment.status === "refunded" ? "completed" : "pending",
+            status: reflectsRefund ? "completed" : "pending",
             totalRefunded: this.fromMinorUnits(payment.refunded, payment.currency),
             refundedAt: payment.refunded_at
               ? new Date(payment.refunded_at)
@@ -723,9 +806,15 @@ export class MoyasarGateway extends BaseGateway {
   }
 
   /**
-   * Void an authorized payment
+   * Void a payment while Moyasar still allows reversal.
    * @see https://docs.moyasar.com/api/payments/07-void-payment
-   * @note Only works for authorized (not yet captured) payments
+   * @note Allowed for **authorized** (uncaptured) holds, and for **paid** /
+   *   auto-captured payments only within Moyasar's short settlement window
+   *   (commonly ~2 hours per Payment Operations). After that window, use
+   *   {@link refundPayment} instead.
+   * @note Not auto-retried by `withRetry`. Pass `idempotencyKey` with
+   *   `moyasar.idempotencyStore` so **caller** retries are deduped (Moyasar has
+   *   no native void idempotency).
    */
   async voidPayment(params: VoidParams): Promise<GatewayPaymentResult> {
     return this.executeWithHooks("voidPayment", params, async (p) => {
@@ -739,7 +828,8 @@ export class MoyasarGateway extends BaseGateway {
             this.paymentPath(p.gatewayPaymentId, "void"),
             {
               method: "POST",
-              headers: this.getHeaders(),
+              // Empty body — omit Content-Type so intermediaries don't expect JSON.
+              headers: this.getHeaders({ contentType: false }),
             },
             "Failed to void payment",
           )) as MoyasarPaymentResponse | MoyasarErrorResponse;
@@ -818,8 +908,10 @@ export class MoyasarGateway extends BaseGateway {
           return new NetworkError(message);
         case "record_not_found":
           return new ResourceNotFoundError(message, raw);
+        // 3DS challenge failure is a card/auth step failure at the issuer, not
+        // an SDK/API credentials failure — do not map to AuthenticationError.
         case "3ds_auth_error":
-          return new AuthenticationError(message);
+          return new CardDeclinedError(message, raw);
       }
 
       if (status === 400) {
@@ -870,20 +962,43 @@ export class MoyasarGateway extends BaseGateway {
    */
   parseWebhookEvent(payload: unknown): WebhookEvent {
     const raw = this.assertMoyasarWebhookPayload(payload);
+
+    // card_auth_* events carry a card authentication object, not a payment.
+    // Refuse rather than mapping them as payment.pending.
+    if (raw.type.startsWith("card_auth_")) {
+      throw new InvalidWebhookError(
+        `Moyasar card authentication webhooks (${raw.type}) are not supported; handle card_auth_* events separately from payment webhooks`,
+      );
+    }
+
     const paymentId = this.extractPaymentId(raw.data.metadata);
+    const data = raw.data as MoyasarWebhookPayload["data"] & {
+      refunded?: number;
+      captured?: number;
+    };
+
+    // Never re-expose the webhook secret in rawPayload after verification.
+    const { secret_token: _secretToken, ...rawWithoutSecret } = raw;
 
     return {
       id: raw.id,
       type: this.normalizeWebhookEventType(raw.type),
       gateway: "moyasar",
       paymentId,
-      gatewayPaymentId: raw.data.id,
-      status: this.mapStatus(raw.data.status),
-      amount: this.fromMinorUnits(raw.data.amount, raw.data.currency),
+      gatewayPaymentId: data.id,
+      status: this.resolvePaymentStatus({
+        status: data.status,
+        amount: data.amount,
+        refunded: data.refunded,
+        captured: data.captured,
+      }),
+      amount: this.fromMinorUnits(data.amount, data.currency),
       // Normalize to uppercase ISO 4217 for cross-gateway consistency.
-      currency: raw.data.currency.toUpperCase(),
+      currency: data.currency.toUpperCase(),
       timestamp: new Date(raw.created_at),
-      rawPayload: raw,
+      // Moyasar exposes test/live on the envelope as `live`.
+      ...(typeof raw.live === "boolean" ? { livemode: raw.live } : {}),
+      rawPayload: rawWithoutSecret,
     };
   }
 
@@ -936,12 +1051,18 @@ export class MoyasarGateway extends BaseGateway {
   /**
    * Get authorization headers for Moyasar API
    * Moyasar uses HTTP Basic Auth with secret key as username
+   * @param options.contentType - When false, omits Content-Type (for empty-body POSTs).
    */
-  private getHeaders(options: { auth?: boolean } = {}): Record<string, string> {
+  private getHeaders(
+    options: { auth?: boolean; contentType?: boolean } = {},
+  ): Record<string, string> {
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
       Accept: "application/json",
     };
+
+    if (options.contentType !== false) {
+      headers["Content-Type"] = "application/json";
+    }
 
     if (options.auth !== false) {
       const credentials = btoa(`${this.moyasarConfig.secretKey}:`);
@@ -952,8 +1073,13 @@ export class MoyasarGateway extends BaseGateway {
   }
 
   /**
-   * Map Moyasar payment response to unified GatewayPaymentResult
-   * Note: Card and STC Pay challenge URLs are returned in transaction_url
+   * Map Moyasar payment response to unified GatewayPaymentResult.
+   * Card and STC Pay challenge URLs are returned in transaction_url.
+   *
+   * `success` is false when the provider status maps to SDK `failed`
+   * (`failed`, `abandoned`, or an unmapped/unknown provider status). Other
+   * statuses (including `initiated` → SDK `pending`) yield `success: true` —
+   * callers must check `status` before fulfilling.
    */
   private mapPaymentResponse(
     payment: MoyasarPaymentResponse,
@@ -963,11 +1089,15 @@ export class MoyasarGateway extends BaseGateway {
       ? undefined
       : transactionUrl;
     const nextAction = this.mapNextAction(payment);
+    // Single mapStatus call: failed/abandoned/unmapped → "failed" (warn once)
+    const baseStatus = this.mapStatus(payment.status);
+    const status = this.resolvePaymentStatus(payment, baseStatus);
 
     return {
-      success: payment.status !== "failed" && payment.status !== "abandoned",
+      // failed/abandoned/unmapped → success false; initiated/paid/authorized/etc. can be true
+      success: baseStatus !== "failed",
       gatewayId: payment.id,
-      status: this.mapStatus(payment.status),
+      status,
       redirectUrl,
       ...(nextAction !== undefined ? { nextAction } : {}),
       amount: this.fromMinorUnits(payment.amount, payment.currency),
@@ -978,26 +1108,42 @@ export class MoyasarGateway extends BaseGateway {
     };
   }
 
-  private toMinorUnits(amount: number, currency: string): number {
+  /**
+   * Convert major currency units to Moyasar minor units.
+   * @param options.allowNonPositive - For splits, Moyasar allows any non-zero
+   *   integer (including negatives). Top-level payment amounts still require >= 1.
+   */
+  private toMinorUnits(
+    amount: number,
+    currency: string,
+    options: { allowNonPositive?: boolean } = {},
+  ): number {
     const exponent = getCurrencyExponent(currency);
     const minorAmount = amount * 10 ** exponent;
     const roundedMinorAmount = Math.round(minorAmount);
+    const currencyCode = currency.toUpperCase();
 
     if (!Number.isSafeInteger(roundedMinorAmount)) {
       throw new InvalidRequestError(
-        `Moyasar amount for ${currency.toUpperCase()} is too large to represent safely in minor units`,
+        `Moyasar amount for ${currencyCode} is too large to represent safely in minor units`,
       );
     }
 
-    if (roundedMinorAmount < 1) {
+    if (options.allowNonPositive) {
+      if (roundedMinorAmount === 0) {
+        throw new InvalidRequestError(
+          `Moyasar split amount for ${currencyCode} cannot be zero`,
+        );
+      }
+    } else if (roundedMinorAmount < 1) {
       throw new InvalidRequestError(
-        `Moyasar amount for ${currency.toUpperCase()} must be at least one minor currency unit`,
+        `Moyasar amount for ${currencyCode} must be at least one minor currency unit`,
       );
     }
 
     if (Math.abs(minorAmount - roundedMinorAmount) > 1e-8) {
       throw new InvalidRequestError(
-        `Moyasar amount for ${currency.toUpperCase()} has more decimal places than the currency supports`,
+        `Moyasar amount for ${currencyCode} has more decimal places than the currency supports`,
       );
     }
 
@@ -1144,14 +1290,16 @@ export class MoyasarGateway extends BaseGateway {
   }
 
   /**
-   * Map Moyasar status to unified PaymentStatus
+   * Map Moyasar provider status string to unified PaymentStatus.
+   * Unmapped values fail closed as `failed` (do not treat as pending fulfillment).
    */
   private mapStatus(moyasarStatus: string): PaymentStatus {
     const statusMap: Record<string, PaymentStatus> = {
       initiated: "pending",
       pending: "pending",
       authorized: "authorized",
-      verified: "authorized", // Card verification (0-amount auth)
+      // Zero-amount card setup / verification — not an authorization hold.
+      verified: "setup_completed",
       captured: "paid",
       paid: "paid",
       abandoned: "failed",
@@ -1160,10 +1308,67 @@ export class MoyasarGateway extends BaseGateway {
       voided: "cancelled",
     };
 
-    return statusMap[moyasarStatus] ?? "pending";
+    const mapped = statusMap[moyasarStatus];
+    if (mapped === undefined) {
+      this.logger.warn(
+        `[Moyasar] Unmapped payment status "${moyasarStatus}"; treating as failed (fail-closed for fulfillment)`,
+      );
+      return "failed";
+    }
+    return mapped;
   }
 
-  private mapNextAction(payment: MoyasarPaymentResponse): unknown {
+  /**
+   * After mapping the provider status string, refine using amount fields so
+   * partial refunds/captures surface as partially_refunded / partially_captured.
+   * @param baseStatus - Optional precomputed `mapStatus` result (avoids double map/warn).
+   */
+  private resolvePaymentStatus(
+    payment: {
+      status: string;
+      amount: number;
+      refunded?: number;
+      captured?: number;
+    },
+    baseStatus?: PaymentStatus,
+  ): PaymentStatus {
+    const status = baseStatus ?? this.mapStatus(payment.status);
+    const amount = payment.amount;
+    const refunded =
+      typeof payment.refunded === "number" && Number.isFinite(payment.refunded)
+        ? payment.refunded
+        : 0;
+    const captured =
+      typeof payment.captured === "number" && Number.isFinite(payment.captured)
+        ? payment.captured
+        : 0;
+
+    if (refunded > 0 && refunded < amount) {
+      return "partially_refunded";
+    }
+    if (refunded >= amount && amount > 0) {
+      return "refunded";
+    }
+
+    // Partial capture only when the base status is auth/paid (captured) family.
+    if (
+      captured > 0 &&
+      captured < amount &&
+      (status === "authorized" ||
+        status === "paid" ||
+        payment.status === "authorized" ||
+        payment.status === "captured" ||
+        payment.status === "paid")
+    ) {
+      return "partially_captured";
+    }
+
+    return status;
+  }
+
+  private mapNextAction(
+    payment: MoyasarPaymentResponse,
+  ): PaymentNextAction | undefined {
     const transactionUrl = payment.source?.transaction_url;
     if (!transactionUrl || payment.status !== "initiated") {
       return undefined;

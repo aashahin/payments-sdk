@@ -130,12 +130,21 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
 /**
  * Produce a stable fingerprint for arbitrary request params, with object keys
  * sorted so equivalent payloads hash identically regardless of key order.
+ *
+ * `undefined` and `null` are encoded distinctly so omitting a field (or an
+ * explicit `undefined`) does not collide with an explicit `null`.
  */
 export function fingerprintParams(value: unknown): string {
   return stableStringify(value);
 }
 
+/** Sentinel so `undefined` does not collapse to the same encoding as `null`. */
+const UNDEFINED_SENTINEL = '"__undefined__"';
+
 function stableStringify(value: unknown): string {
+  if (value === undefined) {
+    return UNDEFINED_SENTINEL;
+  }
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value) ?? "null";
   }

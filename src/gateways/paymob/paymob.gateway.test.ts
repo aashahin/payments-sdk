@@ -27,7 +27,14 @@ const PAYMOB_TEST_CONFIG: PaymobConfig = {
   integrationId: "123456",
 };
 
+/** Legacy post-pay only (apiKey, no secretKey) — exercises /api/auth/tokens path. */
 const PAYMOB_ACTION_CONFIG: PaymobConfig = {
+  apiKey: "api_key_xxxxxxxxxxxxxxxxxxxxxxxx",
+  region: "ksa",
+};
+
+/** Both secretKey and apiKey — secretKey Token auth must be preferred. */
+const PAYMOB_BOTH_KEYS_CONFIG: PaymobConfig = {
   ...PAYMOB_TEST_CONFIG,
   apiKey: "api_key_xxxxxxxxxxxxxxxxxxxxxxxx",
 };
@@ -287,6 +294,35 @@ describe("PaymobGateway", () => {
 
       expect((aeGateway as any).baseUrl).toBe("https://uae.paymob.com");
     });
+
+    it("warns when secretKey is set without hmacSecret", () => {
+      const warnings: unknown[][] = [];
+      new PaymobGateway(
+        {
+          secretKey: "sk_test_no_hmac",
+          publicKey: "pk_test_no_hmac",
+          region: "ksa",
+          integrationId: "123456",
+        },
+        hooksManager,
+        captureLogger(warnings),
+      );
+
+      expect(warnings.some((entry) =>
+        String(entry[0]).includes("hmacSecret") && String(entry[0]).includes("fail closed"),
+      )).toBe(true);
+    });
+
+    it("does not warn about missing hmacSecret when hmacSecret is configured", () => {
+      const warnings: unknown[][] = [];
+      new PaymobGateway(
+        PAYMOB_TEST_CONFIG,
+        hooksManager,
+        captureLogger(warnings),
+      );
+
+      expect(warnings.some((entry) => String(entry[0]).includes("hmacSecret"))).toBe(false);
+    });
   });
 
   describe("createPayment", () => {
@@ -431,14 +467,97 @@ describe("PaymobGateway", () => {
       const requestBody = JSON.parse(fetchCalls[0]!.init!.body as string);
 
       expect(requestBody.payment_methods).toEqual(["auth-card"]);
+      expect(requestBody.is_auth).toBe(true);
+      expect(requestBody.payment_type).toBe("AUTH");
     });
 
-    it("fails loudly when capture is false but no auth integration is configured", async () => {
-      await expect(gateway.createPayment({
+    it("sets is_auth true and payment_type AUTH on Intention body when capture is false (dual auth model)", async () => {
+      const authGateway = new PaymobGateway(PAYMOB_AUTH_CONFIG, hooksManager);
+      mockFetchSequence(jsonResponse({ id: "pi_auth_456", client_secret: "csk_auth_456" }));
+
+      await authGateway.createPayment({
+        ...VALID_CREATE_PARAMS,
+        capture: false,
+      });
+      const requestBody = JSON.parse(fetchCalls[0]!.init!.body as string);
+
+      expect(requestBody.is_auth).toBe(true);
+      expect(requestBody.payment_type).toBe("AUTH");
+      expect(requestBody.payment_methods).toEqual(["auth-card"]);
+    });
+
+    it("does not set is_auth or payment_type on Intention body for normal capture payments", async () => {
+      mockFetchSequence(jsonResponse({ id: "pi_test_123", client_secret: "csk_test_123" }));
+
+      await gateway.createPayment(VALID_CREATE_PARAMS);
+      const requestBody = JSON.parse(fetchCalls[0]!.init!.body as string);
+
+      expect(requestBody.is_auth).toBeUndefined();
+      expect(requestBody.payment_type).toBeUndefined();
+    });
+
+    it("falls back to integrationId with is_auth AUTH when capture is false and authIntegrationId is missing", async () => {
+      const warnings: unknown[][] = [];
+      // PAYMOB_TEST_CONFIG has integrationId but no authIntegrationId
+      const fallbackGateway = new PaymobGateway(
+        PAYMOB_TEST_CONFIG,
+        hooksManager,
+        captureLogger(warnings),
+      );
+      mockFetchSequence(jsonResponse({ id: "pi_auth_fallback", client_secret: "csk_auth_fallback" }));
+
+      await fallbackGateway.createPayment({
+        ...VALID_CREATE_PARAMS,
+        capture: false,
+      });
+      const requestBody = JSON.parse(fetchCalls[0]!.init!.body as string);
+
+      expect(requestBody.payment_methods).toEqual([123456]);
+      expect(requestBody.is_auth).toBe(true);
+      expect(requestBody.payment_type).toBe("AUTH");
+      expect(warnings.some((entry) =>
+        String(entry[0]).includes("authIntegrationId") && String(entry[0]).includes("integrationId"),
+      )).toBe(true);
+    });
+
+    it("fails loudly when capture is false and neither authIntegrationId nor integrationId is configured", async () => {
+      const noIntegrationGateway = new PaymobGateway(
+        {
+          secretKey: PAYMOB_TEST_CONFIG.secretKey,
+          publicKey: PAYMOB_TEST_CONFIG.publicKey,
+          hmacSecret: PAYMOB_TEST_CONFIG.hmacSecret,
+          region: "ksa",
+        },
+        hooksManager,
+      );
+
+      await expect(noIntegrationGateway.createPayment({
         ...VALID_CREATE_PARAMS,
         capture: false,
       })).rejects.toThrow(GatewayApiError);
       expect(fetchCalls).toHaveLength(0);
+    });
+
+    it("applies currencyExponentOverrides for minor-unit conversion", async () => {
+      const overrideGateway = new PaymobGateway(
+        {
+          ...PAYMOB_TEST_CONFIG,
+          region: "om",
+          // Force OMR to 2 decimals instead of ISO 3 for accounts that document it.
+          currencyExponentOverrides: { OMR: 2 },
+        },
+        hooksManager,
+      );
+      mockFetchSequence(jsonResponse({ id: "pi_omr_override", client_secret: "oman_csk_override" }));
+
+      await overrideGateway.createPayment({
+        ...VALID_CREATE_PARAMS,
+        amount: 20.12,
+        currency: "OMR",
+      });
+      const requestBody = JSON.parse(fetchCalls[0]!.init!.body as string);
+
+      expect(requestBody.amount).toBe(2012);
     });
 
     it("uses idempotencyKey as special_reference when no payment/order reference is provided", async () => {
@@ -581,12 +700,154 @@ describe("PaymobGateway", () => {
   });
 
   describe("payment management APIs", () => {
-    it("requires apiKey before capture/refund/void/getPayment token auth", async () => {
-      await expect(gateway.capturePayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
-      await expect(gateway.refundPayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
-      await expect(gateway.voidPayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
-      await expect(gateway.getPayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
+    it("requires secretKey or apiKey for capture/refund/void/getPayment", async () => {
+      const noCredsGateway = new PaymobGateway(
+        { region: "ksa", hmacSecret: "test_hmac" } as PaymobConfig,
+        hooksManager,
+      );
+
+      await expect(noCredsGateway.capturePayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
+      await expect(noCredsGateway.refundPayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
+      await expect(noCredsGateway.voidPayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
+      await expect(noCredsGateway.getPayment({ gatewayPaymentId: "123456789" })).rejects.toThrow(PaymentError);
       expect(fetchCalls).toHaveLength(0);
+    });
+
+    it("uses secretKey Token auth for capture without apiKey or body auth_token", async () => {
+      // Default gateway has secretKey only (no apiKey).
+      mockFetchSequence(
+        jsonResponse({ id: 123, amount_cents: 10000, captured_amount: 0, currency: "SAR" }),
+        jsonResponse({ id: 123, success: true, captured_amount: 5000 }),
+      );
+
+      await gateway.capturePayment({
+        gatewayPaymentId: "123456789",
+        amount: 50,
+        currency: "SAR",
+      });
+
+      expect(fetchCalls.map((call) => call.url)).toEqual([
+        "https://ksa.paymob.com/api/acceptance/transactions/123456789",
+        "https://ksa.paymob.com/api/acceptance/capture",
+      ]);
+      expect(fetchCalls[0]!.init!.headers).toEqual({
+        "Content-Type": "application/json",
+        Authorization: `Token ${PAYMOB_TEST_CONFIG.secretKey}`,
+      });
+      expect(fetchCalls[1]!.init!.headers).toEqual({
+        "Content-Type": "application/json",
+        Authorization: `Token ${PAYMOB_TEST_CONFIG.secretKey}`,
+      });
+      const captureBody = JSON.parse(fetchCalls[1]!.init!.body as string);
+      expect(captureBody).toEqual({
+        transaction_id: 123456789,
+        amount_cents: 5000,
+      });
+      expect(typeof captureBody.transaction_id).toBe("number");
+      expect(captureBody.auth_token).toBeUndefined();
+    });
+
+    it("uses secretKey Token auth for refund, void, and getPayment without apiKey", async () => {
+      mockFetchSequence(
+        jsonResponse({ id: 123, amount_cents: 10000, refunded_amount_cents: 0, currency: "SAR" }),
+        jsonResponse({ id: 123, success: true, refunded_amount_cents: 5000 }),
+        jsonResponse({ id: 123, success: true }),
+        jsonResponse({
+          id: 123456789,
+          success: true,
+          pending: false,
+          amount_cents: 10000,
+          currency: "SAR",
+        }),
+      );
+
+      await gateway.refundPayment({
+        gatewayPaymentId: "123456789",
+        amount: 50,
+        currency: "SAR",
+      });
+      await gateway.voidPayment({ gatewayPaymentId: "123456789" });
+      await gateway.getPayment({ gatewayPaymentId: "123456789" });
+
+      expect(fetchCalls.map((call) => call.url)).toEqual([
+        "https://ksa.paymob.com/api/acceptance/transactions/123456789",
+        "https://ksa.paymob.com/api/acceptance/void_refund/refund",
+        "https://ksa.paymob.com/api/acceptance/void_refund/void",
+        "https://ksa.paymob.com/api/acceptance/transactions/123456789",
+      ]);
+
+      const refundBody = JSON.parse(fetchCalls[1]!.init!.body as string);
+      expect(refundBody.auth_token).toBeUndefined();
+      expect(refundBody).toEqual({
+        transaction_id: 123456789,
+        amount_cents: 5000,
+      });
+      expect(typeof refundBody.transaction_id).toBe("number");
+
+      const voidBody = JSON.parse(fetchCalls[2]!.init!.body as string);
+      expect(voidBody).toEqual({ transaction_id: 123456789 });
+      expect(typeof voidBody.transaction_id).toBe("number");
+
+      for (const call of fetchCalls) {
+        expect(call.init!.headers).toEqual({
+          "Content-Type": "application/json",
+          Authorization: `Token ${PAYMOB_TEST_CONFIG.secretKey}`,
+        });
+      }
+    });
+
+    it("prefers secretKey Token auth over apiKey when both are configured", async () => {
+      const bothGateway = new PaymobGateway(PAYMOB_BOTH_KEYS_CONFIG, hooksManager);
+      mockFetchSequence(
+        jsonResponse({ id: 123, amount_cents: 10000, captured_amount: 0, currency: "SAR" }),
+        jsonResponse({ id: 123, success: true, captured_amount: 10000 }),
+      );
+
+      await bothGateway.capturePayment({
+        gatewayPaymentId: "123456789",
+        amount: 100,
+        currency: "SAR",
+      });
+
+      expect(fetchCalls.some((call) => call.url.endsWith("/api/auth/tokens"))).toBe(false);
+      expect(fetchCalls[1]!.init!.headers).toEqual({
+        "Content-Type": "application/json",
+        Authorization: `Token ${PAYMOB_BOTH_KEYS_CONFIG.secretKey}`,
+      });
+      const captureBody = JSON.parse(fetchCalls[1]!.init!.body as string);
+      expect(captureBody.auth_token).toBeUndefined();
+    });
+
+    it("falls back to legacy apiKey auth_token path when secretKey is missing", async () => {
+      const actionGateway = new PaymobGateway(PAYMOB_ACTION_CONFIG, hooksManager);
+      mockFetchSequence(
+        jsonResponse({ token: "auth_token_123" }),
+        jsonResponse({ id: 123, amount_cents: 10000, captured_amount: 0, currency: "SAR" }),
+        jsonResponse({ id: 123, success: true, captured_amount: 5000 }),
+      );
+
+      await actionGateway.capturePayment({
+        gatewayPaymentId: "123456789",
+        amount: 50,
+        currency: "SAR",
+      });
+
+      expect(fetchCalls.map((call) => call.url)).toEqual([
+        "https://ksa.paymob.com/api/auth/tokens",
+        "https://ksa.paymob.com/api/acceptance/transactions/123456789",
+        "https://ksa.paymob.com/api/acceptance/capture",
+      ]);
+      expect(fetchCalls[1]!.init!.headers).toEqual({
+        "Content-Type": "application/json",
+        Authorization: "Bearer auth_token_123",
+      });
+      const captureBody = JSON.parse(fetchCalls[2]!.init!.body as string);
+      expect(captureBody).toEqual({
+        auth_token: "auth_token_123",
+        transaction_id: 123456789,
+        amount_cents: 5000,
+      });
+      expect(typeof captureBody.transaction_id).toBe("number");
     });
 
     it("wraps auth network failures as NetworkError", async () => {
@@ -1098,7 +1359,8 @@ describe("PaymobGateway", () => {
       const result = await actionGateway.getPayment({ gatewayPaymentId: "123456789" });
 
       expect(result.gatewayId).toBe("123456789");
-      expect(result.status).toBe("partially_captured");
+      // refunded_amount_cents takes priority over captured_amount for status mapping
+      expect(result.status).toBe("partially_refunded");
       expect(result.amount).toBe(100);
       expect(result.capturedAmount).toBe(40);
       expect(result.refundedAmount).toBe(10);
@@ -1169,6 +1431,9 @@ describe("PaymobGateway", () => {
 
       await expect(actionGateway.getPayment({ gatewayPaymentId: "pi_test_123" }))
         .rejects.toThrow(InvalidRequestError);
+      await expect(actionGateway.getPayment({ gatewayPaymentId: "pi_test_123" })).rejects.toThrow(
+        /transaction ID from a verified Paymob webhook.*not the intention ID returned by createPayment/i,
+      );
       expect(fetchCalls).toHaveLength(0);
     });
 
@@ -1177,6 +1442,9 @@ describe("PaymobGateway", () => {
 
       await expect(actionGateway.capturePayment({ gatewayPaymentId: "pi_test_123" }))
         .rejects.toThrow(InvalidRequestError);
+      await expect(actionGateway.capturePayment({ gatewayPaymentId: "pi_test_123" })).rejects.toThrow(
+        /Store transaction id \(obj\.id\) from the processed callback/i,
+      );
       await expect(actionGateway.refundPayment({ gatewayPaymentId: "pi_test_123" }))
         .rejects.toThrow(InvalidRequestError);
       await expect(actionGateway.voidPayment({ gatewayPaymentId: "pi_test_123" }))
@@ -1489,6 +1757,41 @@ describe("PaymobGateway", () => {
 
       expect(gateway.verifyWebhook(payload, signature)).toBe(true);
     });
+
+    it("accepts order_id as an alias for order.id in redirect HMAC fields", () => {
+      const payload = {
+        amount_cents: "10000",
+        created_at: "2024-12-31T12:00:00Z",
+        currency: "SAR",
+        error_occured: "false",
+        has_parent_transaction: "false",
+        id: "123456789",
+        integration_id: "123456",
+        is_3d_secure: "true",
+        is_auth: "false",
+        is_capture: "false",
+        is_refunded: "false",
+        is_standalone_payment: "true",
+        is_voided: "false",
+        order_id: "987654",
+        owner: "302852",
+        pending: "false",
+        source_data_pan: "2346",
+        source_data_sub_type: "MADA",
+        source_data_type: "card",
+        success: "true",
+        merchant_order_id: "payment_123",
+      };
+      const signature = signRedirectPayload(payload);
+
+      expect(gateway.verifyWebhook(payload, signature)).toBe(true);
+
+      const dataString = (gateway as unknown as {
+        buildRedirectHmacString(obj: Record<string, unknown>): string;
+      }).buildRedirectHmacString(payload);
+      // order.id slot should resolve from order_id alias.
+      expect(dataString).toContain("987654");
+    });
   });
 
   describe("parseWebhookEvent", () => {
@@ -1600,6 +1903,57 @@ describe("PaymobGateway", () => {
       expect(partialCaptureEvent.status).toBe("partially_captured");
     });
 
+    it("maps partial refund from refunded_amount_cents alone without is_refunded", () => {
+      const event = gateway.parseWebhookEvent(createMockWebhookPayload({
+        success: true,
+        is_refund: false,
+        is_refunded: false,
+        amount_cents: 10000,
+        refunded_amount_cents: 2500,
+      }));
+
+      expect(event.status).toBe("partially_refunded");
+    });
+
+    it("maps full refund from refunded_amount_cents alone without is_refunded", () => {
+      const event = gateway.parseWebhookEvent(createMockWebhookPayload({
+        success: true,
+        is_refund: false,
+        is_refunded: false,
+        amount_cents: 10000,
+        refunded_amount_cents: 10000,
+      }));
+
+      expect(event.status).toBe("refunded");
+    });
+
+    it("maps full refund of partial capture as refunded not partially_refunded", () => {
+      // Auth 10000, capture 5000, refund 5000 — completeness vs captured_amount, not amount_cents.
+      const event = gateway.parseWebhookEvent(createMockWebhookPayload({
+        success: true,
+        is_refund: false,
+        is_refunded: true,
+        amount_cents: 10000,
+        captured_amount: 5000,
+        refunded_amount_cents: 5000,
+      }));
+
+      expect(event.status).toBe("refunded");
+    });
+
+    it("maps partial refund of partial capture as partially_refunded", () => {
+      const event = gateway.parseWebhookEvent(createMockWebhookPayload({
+        success: true,
+        is_refund: false,
+        is_refunded: true,
+        amount_cents: 10000,
+        captured_amount: 5000,
+        refunded_amount_cents: 2500,
+      }));
+
+      expect(event.status).toBe("partially_refunded");
+    });
+
     it("maps auth-only callbacks to authorized", () => {
       const event = gateway.parseWebhookEvent(createMockWebhookPayload({
         success: true,
@@ -1608,6 +1962,32 @@ describe("PaymobGateway", () => {
       }));
 
       expect(event.status).toBe("authorized");
+    });
+
+    it("maps is_auth true with partial captured_amount to partially_captured not authorized", () => {
+      const event = gateway.parseWebhookEvent(createMockWebhookPayload({
+        success: true,
+        is_auth: true,
+        is_capture: false,
+        is_captured: false,
+        amount_cents: 10000,
+        captured_amount: 5000,
+      }));
+
+      expect(event.status).toBe("partially_captured");
+    });
+
+    it("maps is_auth true with full captured_amount to paid not authorized", () => {
+      const event = gateway.parseWebhookEvent(createMockWebhookPayload({
+        success: true,
+        is_auth: true,
+        is_capture: false,
+        is_captured: false,
+        amount_cents: 10000,
+        captured_amount: 10000,
+      }));
+
+      expect(event.status).toBe("paid");
     });
 
     it("parses webhook amounts with the currency minor unit", () => {
@@ -1670,6 +2050,32 @@ describe("PaymobGateway", () => {
       expect(event.gatewayToken).toBe("tok_saved_card_123");
     });
 
+    it("verifies and parses TOKEN callbacks with string digits for id and merchant_id", () => {
+      const payload = {
+        type: "TOKEN",
+        obj: {
+          id: "9988",
+          token: "tok_saved_card_123",
+          masked_pan: "512345xxxxxx2346",
+          merchant_id: "302852",
+          card_subtype: "MasterCard",
+          created_at: "2024-12-31T12:00:00Z",
+          email: "customer@example.com",
+          order_id: "order_abc123",
+          next_payment_intention: "pi_next_123",
+        },
+      };
+      const signature = signCardTokenPayload(payload as PaymobCardTokenWebhookPayload);
+
+      expect(gateway.verifyWebhook(payload, signature)).toBe(true);
+
+      const event = gateway.parseWebhookEvent(payload);
+      expect(event.status).toBe("setup_completed");
+      expect(event.gatewayObjectId).toBe("9988");
+      expect(event.gatewayToken).toBe("tok_saved_card_123");
+      expect(event.gatewayPaymentId).toBe("pi_next_123");
+    });
+
     it("parses redirection callbacks without treating gateway order IDs as internal IDs", () => {
       const payload = {
         id: "123456789",
@@ -1683,6 +2089,8 @@ describe("PaymobGateway", () => {
 
       const event = gateway.parseWebhookEvent(payload);
 
+      // TRANSACTION_RESPONSE distinguishes redirect callbacks from processed TRANSACTION webhooks.
+      // Callers must not fulfill orders on redirect-only events.
       expect(event.type).toBe("TRANSACTION_RESPONSE");
       expect(event.paymentId).toBe("payment_123");
       expect(event.gatewayPaymentId).toBe("123456789");

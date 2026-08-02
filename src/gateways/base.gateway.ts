@@ -18,6 +18,79 @@ import { PaymentAbortedError, InvalidRequestError, PaymentError } from '../error
 import { createRedactingLogger, noopLogger, type Logger } from '../utils/logger';
 
 /**
+ * Money / payment-identity fields that after-hooks must not alter.
+ * After-hooks may still add/merge non-critical fields (metadata, rawResponse,
+ * redirectUrl, etc.); these keys are restored from the original gateway result
+ * whenever they were present on that original object.
+ *
+ * Includes fee / capturedAmount / refundedAmount / clientSecret so after-hooks
+ * cannot forge settlement totals or client secrets.
+ */
+const MONEY_IDENTITY_KEYS = [
+    'success',
+    'status',
+    'amount',
+    'gatewayId',
+    'captureId',
+    'authorizationId',
+    'orderId',
+    'totalRefunded',
+    'refundId',
+    'gatewayRefundId',
+    'fee',
+    'capturedAmount',
+    'refundedAmount',
+    'clientSecret',
+] as const;
+
+/**
+ * Restore critical money/identity fields from the original gateway result onto
+ * an after-hook `modifiedResult`. Hooks cannot flip paid status or amounts.
+ *
+ * If `modified` is not a non-null object (null / undefined / primitive), it is
+ * ignored and the original gateway result is returned unchanged.
+ */
+function restoreMoneyIdentityFields<R>(original: R, modified: R): R {
+    // Non-object modifiedResult cannot carry additive fields safely — ignore it.
+    // (Caller may log a warn when a logger is available.)
+    if (modified === null || typeof modified !== 'object') {
+        return original;
+    }
+
+    if (original === null || typeof original !== 'object') {
+        return modified;
+    }
+
+    const orig = original as Record<string, unknown>;
+    const out: Record<string, unknown> = {
+        ...(modified as Record<string, unknown>),
+    };
+    let touched = false;
+
+    for (const key of MONEY_IDENTITY_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(orig, key)) {
+            if (out[key] !== orig[key]) {
+                out[key] = orig[key];
+                touched = true;
+            }
+        }
+    }
+
+    return (touched ? out : modified) as R;
+}
+
+/**
+ * Shallow-clone a gateway result so after-hooks that mutate the argument
+ * in-place cannot poison the freeze snapshot used by restoreMoneyIdentityFields.
+ */
+function shallowCloneResult<R>(result: R): R {
+    if (result === null || typeof result !== 'object') {
+        return result;
+    }
+    return { ...(result as Record<string, unknown>) } as R;
+}
+
+/**
  * Abstract base gateway that provides hook execution for all operations.
  * All concrete gateway implementations should extend this class.
  */
@@ -50,21 +123,23 @@ export abstract class BaseGateway implements PaymentGateway {
         executor: (params: T) => Promise<R>,
         schema?: z.ZodTypeAny
     ): Promise<R> {
-        // Validation Layer
+        // Validation Layer — use parsed data so Zod defaults/transforms apply
+        let validatedParams = params;
         if (schema) {
-            const result = schema.safeParse(params);
-            if (!result.success) {
+            const parsed = schema.safeParse(params);
+            if (!parsed.success) {
                 throw new InvalidRequestError(
                     `Validation failed for ${operation}`,
-                    result.error.errors
+                    parsed.error.errors
                 );
             }
+            validatedParams = parsed.data as T;
         }
 
         const ctx: HookContext<T> = {
             gateway: this.name,
             operation,
-            params,
+            params: validatedParams,
             timestamp: new Date(),
             metadata: {},
         };
@@ -75,41 +150,97 @@ export abstract class BaseGateway implements PaymentGateway {
             throw new PaymentAbortedError(beforeResult.abortReason);
         }
 
-        // Use modified params if provided by hooks
-        const finalParams = beforeResult.params ?? params;
+        // Use modified params if provided by hooks; re-validate so defaults/transforms apply
+        let finalParams = beforeResult.params ?? validatedParams;
         if (schema) {
-            const result = schema.safeParse(finalParams);
-            if (!result.success) {
+            const parsed = schema.safeParse(finalParams);
+            if (!parsed.success) {
                 throw new InvalidRequestError(
                     `Validation failed for ${operation}`,
-                    result.error.errors
+                    parsed.error.errors
                 );
             }
+            finalParams = parsed.data as T;
         }
 
+        let result: R;
         try {
             // Execute the actual gateway operation
-            const result = await executor(finalParams);
-
-            // Execute after hooks
-            const afterResult = await this.hooks.runAfter(
-                { ...ctx, params: finalParams },
-                result
-            );
-
-            if (!afterResult.proceed) {
-                throw new PaymentAbortedError('Operation rejected by after hook');
-            }
-
-            return (afterResult.modifiedResult ?? result) as R;
+            result = await executor(finalParams);
         } catch (error) {
             // Map to standardized error
             const mappedError = this.mapError(error);
 
-            // Execute error hooks
-            await this.hooks.runError(ctx, mappedError);
+            // Error hooks are secondary: log failures but always rethrow the mapped error
+            try {
+                await this.hooks.runError(ctx, mappedError);
+            } catch (hookError) {
+                this.logger.error('onError hook failed', {
+                    operation,
+                    gateway: this.name,
+                    hookError:
+                        hookError instanceof Error
+                            ? hookError.message
+                            : String(hookError),
+                    originalError: mappedError.message,
+                });
+            }
             throw mappedError;
         }
+
+        // After hooks run only on successful executor. The gateway side-effect
+        // already committed — after hooks must never convert success into a
+        // payment failure (no PaymentAbortedError, no rethrow of hook errors).
+        // runAfter isolates per-handler throws/proceed:false and keeps last good
+        // modifiedResult; this outer catch is a residual safety net.
+        //
+        // Pass a shallow clone into runAfter so in-place mutation of the hook
+        // argument cannot poison the original freeze snapshot used below.
+        const originalResult = result;
+        const resultForHooks = shallowCloneResult(result);
+
+        let afterResult: { proceed: boolean; modifiedResult?: R };
+        try {
+            afterResult = await this.hooks.runAfter(
+                { ...ctx, params: finalParams },
+                resultForHooks,
+            );
+        } catch (hookError) {
+            this.logger.error(
+                'after hook threw; returning successful gateway result',
+                {
+                    operation,
+                    gateway: this.name,
+                    hookError:
+                        hookError instanceof Error
+                            ? hookError.message
+                            : String(hookError),
+                },
+            );
+            return originalResult;
+        }
+
+        if (!afterResult.proceed) {
+            this.logger.warn(
+                'after hook returned proceed:false; ignored because side-effect already committed',
+                {
+                    operation,
+                    gateway: this.name,
+                },
+            );
+        }
+
+        const modified = (afterResult.modifiedResult ?? originalResult) as R;
+        if (modified === null || typeof modified !== 'object') {
+            this.logger.warn(
+                'after hook modifiedResult was not a non-null object; ignored',
+                {
+                    operation,
+                    gateway: this.name,
+                },
+            );
+        }
+        return restoreMoneyIdentityFields(originalResult, modified);
     }
 
     /**

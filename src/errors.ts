@@ -11,7 +11,9 @@ export class PaymentError extends Error {
     ) {
         super(message);
         this.name = 'PaymentError';
-        Error.captureStackTrace(this, this.constructor);
+        if (typeof Error.captureStackTrace === 'function') {
+            Error.captureStackTrace(this, this.constructor);
+        }
     }
 }
 
@@ -40,6 +42,21 @@ export class GatewayNotConfiguredError extends PaymentError {
             400
         );
         this.name = 'GatewayNotConfiguredError';
+    }
+}
+
+/**
+ * Thrown when a configured gateway does not implement the requested operation
+ * (e.g. voidPayment / getPayment / getPaymentStatus).
+ */
+export class OperationNotSupportedError extends PaymentError {
+    constructor(gatewayName: string, operation: string) {
+        super(
+            `Gateway '${gatewayName}' does not support ${operation}`,
+            'OPERATION_NOT_SUPPORTED',
+            400
+        );
+        this.name = 'OperationNotSupportedError';
     }
 }
 

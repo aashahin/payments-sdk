@@ -159,10 +159,20 @@ export type MoyasarBackendPaymentSource = Exclude<
 
 /**
  * Moyasar split recipient for marketplace/platform payments.
- * Field names match Moyasar's API payload so callers can copy examples from
- * Moyasar docs without the SDK silently dropping them.
+ * Field names (except unit of `amount`) match Moyasar's API payload so callers
+ * can copy examples from Moyasar docs without the SDK silently dropping them.
+ *
+ * **Amount units**: `amount` is in **major** currency units — the same unit as
+ * top-level `createPayment` `amount` (e.g. `50` for 50.00 SAR). The SDK converts
+ * each split to Moyasar's minor units (halalas/fils) before calling the API.
+ * Moyasar requires a non-zero split amount; negative values are allowed by the
+ * API where reverse splits are supported.
  */
 export interface MoyasarPaymentSplit {
+    /**
+     * Split amount in major currency units (e.g. `50` for 50.00 SAR).
+     * Converted to minor units for the Moyasar API. Must be non-zero.
+     */
     amount: number;
     recipient_id: string;
     reference?: string;
@@ -249,6 +259,17 @@ export interface PaymobCreatePaymentParams
 }
 
 /**
+ * PayPal-specific create params. PayPal prefers `returnUrl` / `cancelUrl`;
+ * `callbackUrl` is optional when `returnUrl` is provided. Runtime validation
+ * requires at least one of `callbackUrl` | `returnUrl` for success return, and
+ * at least one of `cancelUrl` | `callbackUrl` | `returnUrl` for cancel fallback.
+ */
+export interface PayPalCreatePaymentParams
+    extends Omit<CreatePaymentParams, "callbackUrl"> {
+    callbackUrl?: string;
+}
+
+/**
  * Parameters for confirming an initiated Moyasar STC Pay payment with the OTP
  * sent to the customer's phone.
  */
@@ -267,7 +288,12 @@ export interface CaptureParams {
     gatewayPaymentId: string;
     /** Amount to capture (optional, defaults to full amount) */
     amount?: number;
-    /** ISO 4217 currency code (required for Stripe zero-decimal partial captures) */
+    /**
+     * ISO 4217 currency code. Required when providing a partial capture
+     * `amount` for Moyasar, PayPal, or Stripe (and similar gateways that need
+     * currency to convert major units to minor units). Optional for full
+     * captures that rely on the original payment currency at the gateway.
+     */
     currency?: string;
     /** Idempotency key for safe retries */
     idempotencyKey?: string;
@@ -278,8 +304,10 @@ export interface CaptureParams {
      */
     paypalCaptureType?: "order" | "authorization";
     /**
-     * PayPal authorization captures only: marks whether this is the final capture
-     * for the authorization. Defaults to true.
+     * PayPal authorization captures only: whether this is the final capture
+     * for the authorization. Amount-dependent SDK defaults (PayPal API default
+     * is `false`): omit `amount` (full remaining capture) → `true`; set
+     * `amount` (partial) → `false` unless `paypalFinalCapture === true`.
      */
     paypalFinalCapture?: boolean;
 }
@@ -321,7 +349,53 @@ export interface GetPaymentParams {
 }
 
 /**
- * Result from gateway payment operations
+ * Moyasar STC Pay OTP next step. `transactionUrl` is the OTP submission
+ * endpoint (not a browser redirect) — pass it to `confirmStcPayOtp`.
+ */
+export type MoyasarStcPayOtpNextAction = {
+    type: "stcpay_otp";
+    transactionUrl: string;
+    method: "POST";
+    parameter: "otp_value";
+};
+
+/**
+ * SDK-normalized browser/checkout redirect next step (Moyasar 3DS, Paymob
+ * unified checkout, etc.).
+ */
+export type RedirectPaymentNextAction = {
+    type: "redirect";
+    /** Browser redirect URL (e.g. Moyasar 3DS `transaction_url`) */
+    url?: string;
+    /** Paymob unified checkout URL */
+    checkoutUrl?: string;
+    intentionId?: string;
+    clientSecret?: string;
+    paymentKeys?: unknown;
+};
+
+/**
+ * Customer next-step after create/capture. Narrow on `type` for Moyasar STC Pay
+ * OTP (`stcpay_otp`) and SDK-normalized redirects (`redirect`). Other providers
+ * (e.g. Stripe `PaymentIntent.next_action`) may pass through provider-native
+ * shapes under a free-form object.
+ */
+export type PaymentNextAction =
+    | MoyasarStcPayOtpNextAction
+    | RedirectPaymentNextAction
+    | { type?: string; [key: string]: unknown };
+
+/** @deprecated Prefer {@link PaymentNextAction}; alias kept for Moyasar-focused call sites. */
+export type MoyasarNextAction = MoyasarStcPayOtpNextAction | { type: "redirect"; url: string };
+
+/**
+ * Result from gateway payment operations.
+ *
+ * **After-hook freeze**: money / identity fields (`success`, `status`, `amount`,
+ * `gatewayId`, capture/order/authorization/refund IDs, `fee`, `capturedAmount`,
+ * `refundedAmount`, `clientSecret`, …) are restored from the original gateway
+ * result after after-hooks run. After-hooks may only attach additive fields
+ * (and cannot flip outcomes via in-place mutation of the hook argument either).
  */
 export interface GatewayPaymentResult {
     /** Whether the API call succeeded */
@@ -351,7 +425,7 @@ export interface GatewayPaymentResult {
     /** Client secret for frontend confirmation flows (Stripe PaymentIntents) */
     clientSecret?: string | undefined;
     /** Gateway-specific next action payload for customer authentication or redirects */
-    nextAction?: unknown;
+    nextAction?: PaymentNextAction | undefined;
     /** Raw response from the gateway API */
     rawResponse: unknown;
 }

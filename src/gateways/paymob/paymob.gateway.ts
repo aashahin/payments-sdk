@@ -296,6 +296,24 @@ export class PaymobGateway extends BaseGateway {
     this.paymobConfig = config;
     this.baseUrl = this.resolveBaseUrl(config);
     this.warnIfIdempotencyStoreMissing();
+    this.warnIfHmacSecretMissing();
+  }
+
+  /**
+   * When secretKey is configured (live Intention / management traffic) but
+   * hmacSecret is absent, webhooks fail closed — verifyWebhook returns false
+   * and nothing is verified. Surface this at construction so merchants notice
+   * before going to production.
+   */
+  private warnIfHmacSecretMissing(): void {
+    if (this.paymobConfig.secretKey && !this.paymobConfig.hmacSecret) {
+      this.logger.warn(
+        "[Paymob] secretKey is configured but hmacSecret is missing. " +
+          "Webhook verification will fail closed (verifyWebhook returns false) " +
+          "until hmacSecret is set, or allowUnverifiedWebhooks is enabled in an " +
+          "explicit local/test environment.",
+      );
+    }
   }
 
   /**
@@ -392,7 +410,7 @@ export class PaymobGateway extends BaseGateway {
     const paymentMethods = this.resolvePaymentMethods(params);
     this.warnIfPerPaymentCallbacksMayBeIgnored(params, paymentMethods);
 
-    const requestBody = {
+    const requestBody: Record<string, unknown> = {
       amount: this.toMinorUnits(params.amount, currency),
       currency,
       payment_methods: paymentMethods,
@@ -411,6 +429,14 @@ export class PaymobGateway extends BaseGateway {
         idempotencyKey: params.idempotencyKey,
       },
     };
+
+    // Auth-only: dual model — swap to auth integration (resolvePaymentMethods) AND set is_auth
+    // + payment_type AUTH. Paymob auth/capture is primarily integration-driven; these flags
+    // document auth-only intent on the Intention request.
+    if (params.capture === false) {
+      requestBody.is_auth = true;
+      requestBody.payment_type = "AUTH";
+    }
 
     const response = await this.fetchPaymobMutation(
       `${this.baseUrl}${endpoint}`,
@@ -483,14 +509,27 @@ export class PaymobGateway extends BaseGateway {
     params: PaymobCreatePaymentParams,
   ): Promise<GatewayPaymentResult> {
     const currency = this.resolveCurrency(params.currency);
-    const integrationId =
-      params.paymobIntegrationId ??
-      (params.capture === false
-        ? this.paymobConfig.authIntegrationId
-        : this.paymobConfig.integrationId);
+    // Match Intention resolvePaymentMethods: auth prefers authIntegrationId,
+    // then falls back to integrationId (with warn) when capture:false.
+    let integrationId = params.paymobIntegrationId;
+    if (integrationId === undefined || integrationId === null) {
+      if (params.capture === false) {
+        if (this.paymobConfig.authIntegrationId !== undefined && this.paymobConfig.authIntegrationId !== null) {
+          integrationId = this.paymobConfig.authIntegrationId;
+        } else if (this.paymobConfig.integrationId !== undefined && this.paymobConfig.integrationId !== null) {
+          this.logger.warn(
+            "[Paymob] capture:false without authIntegrationId — using integrationId for legacy checkout. " +
+              "A dedicated authIntegrationId is preferred for auth/capture flows.",
+          );
+          integrationId = this.paymobConfig.integrationId;
+        }
+      } else {
+        integrationId = this.paymobConfig.integrationId;
+      }
+    }
     const iframeId = params.paymobIframeId ?? this.paymobConfig.iframeId;
 
-    if (!integrationId) {
+    if (integrationId === undefined || integrationId === null) {
       throw new GatewayApiError(
         "Paymob legacy checkout requires integrationId",
         "paymob",
@@ -613,25 +652,25 @@ export class PaymobGateway extends BaseGateway {
     return this.executeWithHooks("capturePayment", params, async (p) => {
       return this.executeIdempotent("capturePayment", p.idempotencyKey, p, async () => {
         this.assertPaymobTransactionId(p.gatewayPaymentId, "capturePayment");
-        const token = await this.getAuthToken();
+        this.assertPostPayCredentials();
         const resolvedAmount = await this.resolveActionAmountCents(
-          token,
           p.gatewayPaymentId,
           p.amount,
           "capture",
           p.currency,
         );
 
+        const mutation = await this.buildPostPayMutation({
+          transaction_id: Number(p.gatewayPaymentId),
+          amount_cents: resolvedAmount.amountCents,
+        });
+
         const response = await this.fetchPaymobMutation(
           `${this.baseUrl}/api/acceptance/capture`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              auth_token: token,
-              transaction_id: p.gatewayPaymentId,
-              amount_cents: resolvedAmount.amountCents,
-            }),
+            headers: mutation.headers,
+            body: JSON.stringify(mutation.body),
           },
           "Capture",
         );
@@ -691,17 +730,18 @@ export class PaymobGateway extends BaseGateway {
     return this.executeWithHooks("voidPayment", params, async (p) => {
       return this.executeIdempotent("voidPayment", p.idempotencyKey, p, async () => {
         this.assertPaymobTransactionId(p.gatewayPaymentId, "voidPayment");
-        const token = await this.getAuthToken();
+        this.assertPostPayCredentials();
+
+        const mutation = await this.buildPostPayMutation({
+          transaction_id: Number(p.gatewayPaymentId),
+        });
 
         const response = await this.fetchPaymobMutation(
           `${this.baseUrl}/api/acceptance/void_refund/void`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              auth_token: token,
-              transaction_id: p.gatewayPaymentId,
-            }),
+            headers: mutation.headers,
+            body: JSON.stringify(mutation.body),
           },
           "Void",
         );
@@ -749,25 +789,25 @@ export class PaymobGateway extends BaseGateway {
     return this.executeWithHooks("refundPayment", params, async (p) => {
       return this.executeIdempotent("refundPayment", p.idempotencyKey, p, async () => {
         this.assertPaymobTransactionId(p.gatewayPaymentId, "refundPayment");
-        const token = await this.getAuthToken();
+        this.assertPostPayCredentials();
         const resolvedAmount = await this.resolveActionAmountCents(
-          token,
           p.gatewayPaymentId,
           p.amount,
           "refund",
           p.currency,
         );
 
+        const mutation = await this.buildPostPayMutation({
+          transaction_id: Number(p.gatewayPaymentId),
+          amount_cents: resolvedAmount.amountCents,
+        });
+
         const response = await this.fetchPaymobMutation(
           `${this.baseUrl}/api/acceptance/void_refund/refund`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              auth_token: token,
-              transaction_id: p.gatewayPaymentId,
-              amount_cents: resolvedAmount.amountCents,
-            }),
+            headers: mutation.headers,
+            body: JSON.stringify(mutation.body),
           },
           "Refund",
         );
@@ -1005,6 +1045,8 @@ export class PaymobGateway extends BaseGateway {
     this.assignOptionalBoolean(statusData, "is_auth", payload.is_auth);
     this.assignOptionalBoolean(statusData, "is_capture", payload.is_capture);
 
+    // type defaults to TRANSACTION_RESPONSE so callers can distinguish redirect/response
+    // callbacks from processed TRANSACTION webhooks. Never fulfill on redirect-only events.
     return {
       id: String(payload.id),
       type: this.stringOrUndefined(payload.type) ?? "TRANSACTION_RESPONSE",
@@ -1032,7 +1074,10 @@ export class PaymobGateway extends BaseGateway {
     return this.executeWithHooks("getPayment", params, async (p) => {
       const { gatewayPaymentId } = p;
       this.assertPaymobTransactionId(gatewayPaymentId, "getPayment");
-      const token = await this.getAuthToken();
+      this.assertPostPayCredentials();
+      // Resolve auth once outside the retry loop so preflight auth failures
+      // (especially legacy /api/auth/tokens) are not auto-retried.
+      const headers = await this.getInquiryAuthHeaders();
 
       // GET inquiry is safe to retry on transient failures.
       return withRetry(async () => {
@@ -1040,10 +1085,7 @@ export class PaymobGateway extends BaseGateway {
           `${this.baseUrl}/api/acceptance/transactions/${gatewayPaymentId}`,
           {
             method: "GET",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-            },
+            headers,
           },
           "Transaction Inquiry",
         );
@@ -1090,13 +1132,12 @@ export class PaymobGateway extends BaseGateway {
   }
 
   private async resolveActionAmountCents(
-    token: string,
     gatewayPaymentId: string,
     amount: number | undefined,
     operation: PaymobActionOperation,
     currency?: string,
   ): Promise<PaymobResolvedActionAmount> {
-    const transaction = await this.fetchTransaction(token, gatewayPaymentId, `${operation} amount`);
+    const transaction = await this.fetchTransaction(gatewayPaymentId, `${operation} amount`);
 
     if (amount !== undefined) {
       const transactionCurrency = this.requireString(
@@ -1202,20 +1243,21 @@ export class PaymobGateway extends BaseGateway {
   }
 
   private async fetchTransaction(
-    token: string,
     gatewayPaymentId: string,
     operation: string,
   ): Promise<PaymobTransactionResponse> {
+    // Resolve auth once outside the retry loop so preflight auth failures
+    // (especially legacy /api/auth/tokens) are not auto-retried and do not
+    // poison post-pay idempotency keys.
+    const headers = await this.getInquiryAuthHeaders();
+
     // GET inquiry is safe to retry on transient failures.
     return withRetry(async () => {
       const response = await this.fetchPaymob(
         `${this.baseUrl}/api/acceptance/transactions/${gatewayPaymentId}`,
         {
           method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
+          headers,
         },
         `Transaction Inquiry for ${operation}`,
       );
@@ -1256,7 +1298,10 @@ export class PaymobGateway extends BaseGateway {
   }
 
   /**
-   * Map Paymob transaction response to unified PaymentStatus
+   * Map Paymob transaction response to unified PaymentStatus.
+   * Order: pending → void → refund (flags or amounts) → capture amounts → auth-only → paid/failed.
+   * Capture amounts are evaluated before the is_auth early return so a partially captured
+   * auth transaction maps to partially_captured, not authorized.
    */
   private mapTransactionStatus(data: {
     success?: boolean;
@@ -1274,27 +1319,52 @@ export class PaymobGateway extends BaseGateway {
   }): PaymentStatus {
     if (data.pending) return "pending";
     if (data.is_voided === true || (data.success === true && data.is_void === true)) return "cancelled";
-    if (data.is_refunded === true || (data.success === true && data.is_refund === true)) {
+
+    // Explicit refund flags, or refunded_amount_cents alone (some Paymob payloads omit is_refunded).
+    // When captured_amount > 0 (partial capture), completeness is vs captured total — not auth amount_cents.
+    // Full refund of captured amount => refunded even if captured < amount_cents.
+    if (
+      data.is_refunded === true ||
+      (data.success === true && data.is_refund === true) ||
+      (data.refunded_amount_cents !== undefined && data.refunded_amount_cents > 0)
+    ) {
+      const refundBaseline =
+        data.captured_amount !== undefined && data.captured_amount > 0
+          ? data.captured_amount
+          : data.amount_cents;
       if (
-        data.amount_cents !== undefined &&
+        refundBaseline !== undefined &&
         data.refunded_amount_cents !== undefined &&
         data.refunded_amount_cents > 0 &&
-        data.refunded_amount_cents < data.amount_cents
+        data.refunded_amount_cents < refundBaseline
       ) {
         return "partially_refunded";
       }
       return "refunded";
     }
-    if (data.success && data.is_auth && !data.is_capture && !data.is_captured) return "authorized";
+
+    // Capture amounts before auth-only: success + captured_amount > 0 is paid or partially_captured.
+    if (data.success && data.captured_amount !== undefined && data.captured_amount > 0) {
+      if (
+        data.amount_cents !== undefined &&
+        data.captured_amount < data.amount_cents
+      ) {
+        return "partially_captured";
+      }
+      return "paid";
+    }
+
+    // Auth-only: authorized when still uncaptured (no capture flags and no captured_amount).
     if (
       data.success &&
-      data.amount_cents !== undefined &&
-      data.captured_amount !== undefined &&
-      data.captured_amount > 0 &&
-      data.captured_amount < data.amount_cents
+      data.is_auth &&
+      !data.is_capture &&
+      !data.is_captured &&
+      !(data.captured_amount !== undefined && data.captured_amount > 0)
     ) {
-      return "partially_captured";
+      return "authorized";
     }
+
     if (data.success) return "paid";
     return "failed";
   }
@@ -1335,13 +1405,13 @@ export class PaymobGateway extends BaseGateway {
 
     if (gatewayPaymentId.startsWith("pi_")) {
       throw new InvalidRequestError(
-        `Paymob ${operation} requires a transaction ID, not an intention ID. Use the transaction ID from the verified Paymob callback or dashboard.`,
+        `Paymob ${operation} requires the numeric transaction ID from a verified Paymob webhook (or the dashboard), not the intention ID returned by createPayment (e.g. "pi_..."). Store transaction id (obj.id) from the processed callback — do not pass the intention id from create.`,
         [{ path: ["gatewayPaymentId"] }],
       );
     }
 
     throw new InvalidRequestError(
-      `Paymob ${operation} requires a numeric transaction ID from the verified Paymob callback or dashboard.`,
+      `Paymob ${operation} requires a numeric transaction ID from the verified Paymob webhook (obj.id) or dashboard. Do not pass an intention ID, order ID, or other non-numeric reference from createPayment.`,
       [{ path: ["gatewayPaymentId"] }],
     );
   }
@@ -1351,10 +1421,66 @@ export class PaymobGateway extends BaseGateway {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Get auth token for Paymob management APIs.
+   * Post-pay management APIs (capture, refund, void, inquiry) accept either:
+   * - secretKey via `Authorization: Token …` (preferred; no body auth_token), or
+   * - apiKey via legacy `/api/auth/tokens` + body `auth_token` / Bearer inquiry.
    */
-  private async getAuthToken(): Promise<string> {
-    return this.authenticateLegacy();
+  private assertPostPayCredentials(): void {
+    if (this.paymobConfig.secretKey || this.paymobConfig.apiKey) {
+      return;
+    }
+
+    throw new GatewayApiError(
+      "Paymob requires secretKey or apiKey for capture, refund, void, and transaction inquiry",
+      "paymob",
+      { config: "missing_credentials" },
+    );
+  }
+
+  /**
+   * Build headers + body for capture / refund / void.
+   * Prefer secretKey Token header without auth_token in the body.
+   */
+  private async buildPostPayMutation(
+    body: Record<string, unknown>,
+  ): Promise<{ headers: Record<string, string>; body: Record<string, unknown> }> {
+    if (this.paymobConfig.secretKey) {
+      return {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Token ${this.paymobConfig.secretKey}`,
+        },
+        body,
+      };
+    }
+
+    const token = await this.authenticateLegacy();
+    return {
+      headers: { "Content-Type": "application/json" },
+      body: {
+        auth_token: token,
+        ...body,
+      },
+    };
+  }
+
+  /**
+   * Auth headers for transaction inquiry GET.
+   * Prefer secretKey Token; fall back to legacy Bearer from apiKey token exchange.
+   */
+  private async getInquiryAuthHeaders(): Promise<Record<string, string>> {
+    if (this.paymobConfig.secretKey) {
+      return {
+        "Content-Type": "application/json",
+        Authorization: `Token ${this.paymobConfig.secretKey}`,
+      };
+    }
+
+    const token = await this.authenticateLegacy();
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    };
   }
 
   /**
@@ -1385,7 +1511,7 @@ export class PaymobGateway extends BaseGateway {
     const apiKey = this.paymobConfig.apiKey;
     if (!apiKey) {
       throw new GatewayApiError(
-        "Paymob apiKey is required for legacy authentication, capture, refund, void, and transaction inquiry",
+        "Paymob apiKey is required for legacy authentication when secretKey is not configured",
         "paymob",
         { config: "missing_api_key" },
       );
@@ -1482,20 +1608,37 @@ export class PaymobGateway extends BaseGateway {
       return params.paymobPaymentMethods.map((method) => this.normalizePaymentMethod(method));
     }
 
-    const integrationId =
-      params.paymobIntegrationId ??
-      (params.capture === false
-        ? this.paymobConfig.authIntegrationId
-        : this.paymobConfig.integrationId);
-    if (!integrationId) {
-      if (params.capture === false) {
-        throw new GatewayApiError(
-          "Paymob capture:false requires paymobIntegrationId, paymobPaymentMethods, or paymob.authIntegrationId because Paymob auth/capture is integration-driven",
-          "paymob",
-          { config: "missing_auth_integration_id" },
-        );
+    // Per-request override always wins.
+    if (params.paymobIntegrationId !== undefined && params.paymobIntegrationId !== null) {
+      return [this.normalizePaymentMethod(params.paymobIntegrationId)];
+    }
+
+    if (params.capture === false) {
+      // Preferred: dedicated auth/capture integration.
+      if (this.paymobConfig.authIntegrationId !== undefined && this.paymobConfig.authIntegrationId !== null) {
+        return [this.normalizePaymentMethod(this.paymobConfig.authIntegrationId)];
       }
 
+      // Residual: fall back to sale integrationId with is_auth/payment_type AUTH
+      // already set on the Intention body. Warn so merchants configure a dedicated
+      // auth integration when available.
+      if (this.paymobConfig.integrationId !== undefined && this.paymobConfig.integrationId !== null) {
+        this.logger.warn(
+          "[Paymob] capture:false without authIntegrationId — using integrationId with " +
+            "is_auth:true and payment_type AUTH. A dedicated authIntegrationId is preferred " +
+            "for auth/capture flows.",
+        );
+        return [this.normalizePaymentMethod(this.paymobConfig.integrationId)];
+      }
+
+      throw new GatewayApiError(
+        "Paymob capture:false requires paymobIntegrationId, paymobPaymentMethods, paymob.authIntegrationId, or paymob.integrationId because Paymob auth/capture is integration-driven",
+        "paymob",
+        { config: "missing_auth_integration_id" },
+      );
+    }
+
+    if (this.paymobConfig.integrationId === undefined || this.paymobConfig.integrationId === null) {
       throw new GatewayApiError(
         "Paymob Intention API requires integrationId, paymobIntegrationId, or paymobPaymentMethods",
         "paymob",
@@ -1503,7 +1646,7 @@ export class PaymobGateway extends BaseGateway {
       );
     }
 
-    return [this.normalizePaymentMethod(integrationId)];
+    return [this.normalizePaymentMethod(this.paymobConfig.integrationId)];
   }
 
   private resolveSpecialReference(params: PaymobCreatePaymentParams): string | undefined {
@@ -1730,6 +1873,12 @@ export class PaymobGateway extends BaseGateway {
   }
 
   private currencyFractionDigits(currency: string): number {
+    const normalized = currency.toUpperCase();
+    const override = this.paymobConfig.currencyExponentOverrides?.[normalized]
+      ?? this.paymobConfig.currencyExponentOverrides?.[currency];
+    if (typeof override === "number" && Number.isInteger(override) && override >= 0) {
+      return override;
+    }
     return getCurrencyExponent(currency);
   }
 
@@ -2219,7 +2368,10 @@ export class PaymobGateway extends BaseGateway {
     }
     if (field === "order.id") {
       const order = this.recordOrUndefined(obj.order);
-      return this.hmacValue(obj["order.id"] ?? order?.id ?? obj.order);
+      // Redirect callbacks may send order.id, nested order.id, flat order, or order_id.
+      return this.hmacValue(
+        obj["order.id"] ?? order?.id ?? obj.order_id ?? obj.order,
+      );
     }
     if (field === "source_data.pan") {
       const sourceData = this.recordOrUndefined(obj.source_data);
@@ -2339,14 +2491,22 @@ export class PaymobGateway extends BaseGateway {
   }
 
   private isCardTokenWebhook(payload: unknown): payload is PaymobCardTokenWebhookPayload {
-    const raw = payload as PaymobCardTokenWebhookPayload;
-    return Boolean(
-      raw?.obj &&
-      typeof raw.obj.id === "number" &&
-      typeof raw.obj.token === "string" &&
-      typeof raw.obj.masked_pan === "string" &&
-      typeof raw.obj.card_subtype === "string" &&
-      typeof raw.obj.merchant_id === "number",
+    const raw = this.recordOrUndefined(payload);
+    const obj = this.recordOrUndefined(raw?.obj);
+    if (!obj) {
+      return false;
+    }
+
+    // Coerce string digits for id/merchant_id like the transaction webhook path (parseNumber).
+    const id = this.parseNumber(obj.id);
+    const merchantId = this.parseNumber(obj.merchant_id);
+
+    return (
+      id !== undefined &&
+      merchantId !== undefined &&
+      typeof obj.token === "string" &&
+      typeof obj.masked_pan === "string" &&
+      typeof obj.card_subtype === "string"
     );
   }
 

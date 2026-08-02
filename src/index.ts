@@ -1,10 +1,10 @@
-// file: packages/payments/src/index.ts
+// file: packages/payments-sdk/src/index.ts
 
 /**
  * @abshahin/payments-sdk
  *
  * Framework-agnostic multi-gateway payment SDK with lifecycle hooks.
- * Supports Moyasar, PayPal, and Paymob.
+ * Supports Moyasar, PayPal, Paymob, and Stripe.
  *
  * @example
  * ```typescript
@@ -36,7 +36,10 @@
  *   amount: 100,
  *   currency: 'SAR',
  *   callbackUrl: 'https://example.com/callback',
- *   tokenId: 'tok_xxx',
+ *   moyasarSource: {
+ *     type: 'token',
+ *     token: 'token_xxx',
+ *   },
  *   metadata: { orderId: 'order_123' },
  * });
  *
@@ -64,9 +67,14 @@ export type {
   MoyasarAftSender,
   MoyasarCreatePaymentParams,
   MoyasarConfirmStcPayOtpParams,
+  PayPalCreatePaymentParams,
   PaymobCreatePaymentParams,
   GatewayPaymentResult,
   GatewayRefundResult,
+  PaymentNextAction,
+  MoyasarStcPayOtpNextAction,
+  RedirectPaymentNextAction,
+  MoyasarNextAction,
 } from "./types/payment.types";
 
 // Moyasar-specific source types
@@ -160,6 +168,7 @@ export {
   PaymentError,
   PaymentAbortedError,
   GatewayNotConfiguredError,
+  OperationNotSupportedError,
   InvalidWebhookError,
   GatewayApiError,
   CardDeclinedError,

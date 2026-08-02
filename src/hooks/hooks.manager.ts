@@ -6,29 +6,274 @@ import type {
     BeforeHookResult,
     AfterHookResult,
     OperationType,
+    BeforeHook,
+    AfterHook,
+    ErrorHook,
+    WebhookReceivedHook,
+    WebhookVerifiedHook,
+    WebhookFailedHook,
 } from './hooks.types';
 import type { WebhookEvent } from '../types/webhook.types';
 import type { GatewayName } from '../types/payment.types';
+import { noopLogger, type Logger } from '../utils/logger';
 
 /**
  * Manages registration and execution of lifecycle hooks
  */
 export class HooksManager {
     private hooks: PaymentHooks;
+    private readonly logger: Logger;
 
-    constructor(hooks?: PaymentHooks) {
-        this.hooks = hooks ?? {};
+    /**
+     * @param hooks - Optional hook handlers (shallow-copied so later mutation
+     *   of the caller's object does not affect this manager)
+     * @param logger - Optional logger for after-hook isolation diagnostics
+     *   (proceed:false / throws). Defaults to a no-op.
+     */
+    constructor(hooks?: PaymentHooks, logger?: Logger) {
+        this.hooks = { ...(hooks ?? {}) };
+        this.logger = logger ?? noopLogger;
     }
 
     /**
-     * Register a hook at runtime
+     * Register a hook at runtime.
+     * If a handler is already registered for the same name, both are composed
+     * (previous first, then new). Before-hooks short-circuit on `proceed: false`;
+     * after-hooks chain with `modifiedResult` carry-forward and do **not**
+     * short-circuit on `proceed: false` (ignored; later handlers still run);
+     * onWebhookVerified fails fast on first throw; onError/onWebhookReceived/
+     * onWebhookFailed run both then rethrow the first error.
      */
     register<K extends keyof PaymentHooks>(
         name: K,
         handler: PaymentHooks[K]
     ): void {
-        // Type assertion needed due to complex union types
-        (this.hooks as Record<string, unknown>)[name] = handler;
+        if (!handler) {
+            return;
+        }
+
+        const existing = this.hooks[name];
+        if (!existing) {
+            (this.hooks as Record<string, unknown>)[name] = handler;
+            return;
+        }
+
+        (this.hooks as Record<string, unknown>)[name] = this.composeHandlers(
+            name,
+            existing,
+            handler
+        );
+    }
+
+    /**
+     * Compose two handlers for the same hook slot without breaking single-handler types.
+     */
+    private composeHandlers<K extends keyof PaymentHooks>(
+        name: K,
+        previous: NonNullable<PaymentHooks[K]>,
+        next: NonNullable<PaymentHooks[K]>
+    ): PaymentHooks[K] {
+        // Before-style hooks (global + operation-specific)
+        if (
+            name === 'onBefore' ||
+            name === 'beforeCreatePayment' ||
+            name === 'beforeAuthorize' ||
+            name === 'beforeCapture' ||
+            name === 'beforeRefund' ||
+            name === 'beforeVoid'
+        ) {
+            const prev = previous as BeforeHook;
+            const nxt = next as BeforeHook;
+            const composed: BeforeHook = async (ctx) => {
+                const first = await prev(ctx);
+                if (!first.proceed) {
+                    return first;
+                }
+                if (first.params !== undefined) {
+                    ctx.params = first.params;
+                }
+                return nxt(ctx);
+            };
+            return composed as PaymentHooks[K];
+        }
+
+        // After-style hooks: never short-circuit on proceed:false (ignored) or
+        // throw (isolated). Always continue the chain with last good result so
+        // analytics/side-channel handlers cannot drop later after-hooks.
+        // Throws and proceed:false are logged then ignored.
+        if (
+            name === 'onAfter' ||
+            name === 'afterCreatePayment' ||
+            name === 'afterAuthorize' ||
+            name === 'afterCapture' ||
+            name === 'afterRefund' ||
+            name === 'afterVoid'
+        ) {
+            const prev = previous as AfterHook;
+            const nxt = next as AfterHook;
+            const logger = this.logger;
+            const composed: AfterHook = async (ctx, result) => {
+                let carried = result;
+                // Only surface modifiedResult when a handler actually set one so
+                // executeWithHooks can preserve original result identity (e.g.
+                // Paymob idempotent cache returns) when no after-hook mutates.
+                let didModify = false;
+                try {
+                    const first = await prev(ctx, result);
+                    if (!first.proceed) {
+                        logger.warn(
+                            'after hook returned proceed:false; ignored (composition continues)',
+                            {
+                                operation: ctx.operation,
+                                gateway: ctx.gateway,
+                                hook: name,
+                                phase: 'previous',
+                            },
+                        );
+                    }
+                    if (first.modifiedResult !== undefined) {
+                        carried = first.modifiedResult;
+                        didModify = true;
+                    }
+                } catch (e) {
+                    logger.error(
+                        'after hook threw; isolated (composition continues)',
+                        {
+                            operation: ctx.operation,
+                            gateway: ctx.gateway,
+                            hook: name,
+                            phase: 'previous',
+                            hookError:
+                                e instanceof Error ? e.message : String(e),
+                        },
+                    );
+                }
+                try {
+                    const second = await nxt(ctx, carried);
+                    if (!second.proceed) {
+                        logger.warn(
+                            'after hook returned proceed:false; ignored (composition continues)',
+                            {
+                                operation: ctx.operation,
+                                gateway: ctx.gateway,
+                                hook: name,
+                                phase: 'next',
+                            },
+                        );
+                    }
+                    if (second.modifiedResult !== undefined) {
+                        carried = second.modifiedResult;
+                        didModify = true;
+                    }
+                } catch (e) {
+                    logger.error(
+                        'after hook threw; isolated (composition continues)',
+                        {
+                            operation: ctx.operation,
+                            gateway: ctx.gateway,
+                            hook: name,
+                            phase: 'next',
+                            hookError:
+                                e instanceof Error ? e.message : String(e),
+                        },
+                    );
+                }
+                return didModify
+                    ? { proceed: true, modifiedResult: carried }
+                    : { proceed: true };
+            };
+            return composed as PaymentHooks[K];
+        }
+
+        if (name === 'onError') {
+            const prev = previous as ErrorHook;
+            const nxt = next as ErrorHook;
+            // Both handlers always run; first failure is rethrown after both complete
+            // so outer isolation can still preserve the primary payment error.
+            const composed: ErrorHook = async (ctx, error) => {
+                let firstError: unknown;
+                try {
+                    await prev(ctx, error);
+                } catch (e) {
+                    firstError = e;
+                }
+                try {
+                    await nxt(ctx, error);
+                } catch (e) {
+                    if (firstError === undefined) {
+                        firstError = e;
+                    }
+                }
+                if (firstError !== undefined) {
+                    throw firstError;
+                }
+            };
+            return composed as PaymentHooks[K];
+        }
+
+        if (name === 'onWebhookReceived') {
+            const prev = previous as WebhookReceivedHook;
+            const nxt = next as WebhookReceivedHook;
+            const composed: WebhookReceivedHook = async (gateway, payload) => {
+                let firstError: unknown;
+                try {
+                    await prev(gateway, payload);
+                } catch (e) {
+                    firstError = e;
+                }
+                try {
+                    await nxt(gateway, payload);
+                } catch (e) {
+                    if (firstError === undefined) {
+                        firstError = e;
+                    }
+                }
+                if (firstError !== undefined) {
+                    throw firstError;
+                }
+            };
+            return composed as PaymentHooks[K];
+        }
+
+        if (name === 'onWebhookVerified') {
+            const prev = previous as WebhookVerifiedHook;
+            const nxt = next as WebhookVerifiedHook;
+            // Fail-fast: if the first handler throws, do not run the next.
+            // Avoids double fulfillment when a primary handler fails mid-way
+            // (caller gets 5xx / provider retry; secondary must not also fulfill).
+            const composed: WebhookVerifiedHook = async (event) => {
+                await prev(event);
+                await nxt(event);
+            };
+            return composed as PaymentHooks[K];
+        }
+
+        if (name === 'onWebhookFailed') {
+            const prev = previous as WebhookFailedHook;
+            const nxt = next as WebhookFailedHook;
+            const composed: WebhookFailedHook = async (payload, error) => {
+                let firstError: unknown;
+                try {
+                    await prev(payload, error);
+                } catch (e) {
+                    firstError = e;
+                }
+                try {
+                    await nxt(payload, error);
+                } catch (e) {
+                    if (firstError === undefined) {
+                        firstError = e;
+                    }
+                }
+                if (firstError !== undefined) {
+                    throw firstError;
+                }
+            };
+            return composed as PaymentHooks[K];
+        }
+
+        // Fallback: replace (should be unreachable for known keys)
+        return next;
     }
 
     /**
@@ -64,38 +309,95 @@ export class HooksManager {
     }
 
     /**
-     * Run after hooks for an operation
+     * Run after hooks for an operation.
+     *
+     * After hooks cannot abort a committed money operation:
+     * - `proceed: false` is ignored (warn-logged); later after-handlers still
+     *   run with the last good `modifiedResult`.
+     * - Throws from individual after-handlers are isolated (error-logged) so
+     *   earlier `modifiedResult` values are kept and later handlers still run.
+     * - Always returns `{ proceed: true }`. Includes `modifiedResult` only when
+     *   a handler explicitly set one (so callers can preserve original result
+     *   identity when no after-hook transforms the payload). Gateway layer may
+     *   still warn if a caller path surfaces `proceed: false`, and has an outer
+     *   safety net for unexpected throws.
      */
     async runAfter<T, R>(
         ctx: HookContext<T>,
         result: R
     ): Promise<AfterHookResult<R>> {
         let finalResult = result;
+        let didModify = false;
 
         // Run operation-specific after hook first
         const specificHook = this.getSpecificAfterHook<T, R>(ctx.operation);
         if (specificHook) {
-            const hookResult = await specificHook(ctx, finalResult);
-            if (!hookResult.proceed) {
-                return hookResult;
-            }
-            if (hookResult.modifiedResult !== undefined) {
-                finalResult = hookResult.modifiedResult as R;
+            try {
+                const hookResult = await specificHook(ctx, finalResult);
+                if (!hookResult.proceed) {
+                    this.logger.warn(
+                        'after hook returned proceed:false; ignored because side-effect already committed',
+                        {
+                            operation: ctx.operation,
+                            gateway: ctx.gateway,
+                            hook: 'specific',
+                        },
+                    );
+                }
+                if (hookResult.modifiedResult !== undefined) {
+                    finalResult = hookResult.modifiedResult as R;
+                    didModify = true;
+                }
+            } catch (e) {
+                this.logger.error(
+                    'after hook threw; isolated (keeping last good result)',
+                    {
+                        operation: ctx.operation,
+                        gateway: ctx.gateway,
+                        hook: 'specific',
+                        hookError: e instanceof Error ? e.message : String(e),
+                    },
+                );
             }
         }
 
         // Run global onAfter hook
         if (this.hooks.onAfter) {
-            const globalResult = await this.hooks.onAfter(ctx as HookContext, finalResult);
-            if (!globalResult.proceed) {
-                return globalResult as AfterHookResult<R>;
-            }
-            if (globalResult.modifiedResult !== undefined) {
-                finalResult = globalResult.modifiedResult as R;
+            try {
+                const globalResult = await this.hooks.onAfter(
+                    ctx as HookContext,
+                    finalResult,
+                );
+                if (!globalResult.proceed) {
+                    this.logger.warn(
+                        'after hook returned proceed:false; ignored because side-effect already committed',
+                        {
+                            operation: ctx.operation,
+                            gateway: ctx.gateway,
+                            hook: 'onAfter',
+                        },
+                    );
+                }
+                if (globalResult.modifiedResult !== undefined) {
+                    finalResult = globalResult.modifiedResult as R;
+                    didModify = true;
+                }
+            } catch (e) {
+                this.logger.error(
+                    'after hook threw; isolated (keeping last good result)',
+                    {
+                        operation: ctx.operation,
+                        gateway: ctx.gateway,
+                        hook: 'onAfter',
+                        hookError: e instanceof Error ? e.message : String(e),
+                    },
+                );
             }
         }
 
-        return { proceed: true, modifiedResult: finalResult };
+        return didModify
+            ? { proceed: true, modifiedResult: finalResult }
+            : { proceed: true };
     }
 
     /**

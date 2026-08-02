@@ -55,6 +55,145 @@ describe("withRetry", () => {
     ).rejects.toThrow("fail-4");
     expect(attempts).toBe(4);
   });
+
+  it("clamps maxAttempts to at least 1 (maxAttempts 0 still runs once)", async () => {
+    let attempts = 0;
+    const result = await withRetry(
+      async () => {
+        attempts++;
+        return "once";
+      },
+      { isRetryable: () => true, config: { ...fastConfig, maxAttempts: 0 } },
+    );
+    expect(result).toBe("once");
+    expect(attempts).toBe(1);
+  });
+
+  it("clamps negative maxAttempts to 1 and still surfaces a single failure", async () => {
+    let attempts = 0;
+    await expect(
+      withRetry(
+        async () => {
+          attempts++;
+          throw new Error("boom");
+        },
+        { isRetryable: () => true, config: { ...fastConfig, maxAttempts: -3 } },
+      ),
+    ).rejects.toThrow("boom");
+    expect(attempts).toBe(1);
+  });
+
+  it("honors Retry-After above maxDelayMs (does not clamp to maxDelayMs)", async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    // Avoid actually sleeping 120s: force the scheduled delay to 0 while
+    // still recording the delay the default policy computed via onRetry.
+    const originalSetTimeout = globalThis.setTimeout;
+    // @ts-expect-error test stub
+    globalThis.setTimeout = ((fn: () => void, _ms?: number) =>
+      originalSetTimeout(fn, 0)) as typeof setTimeout;
+
+    try {
+      await withRetry(
+        async () => {
+          attempts++;
+          if (attempts === 1) {
+            const err = new Error("rate limited") as Error & {
+              retryAfterSeconds: number;
+            };
+            err.retryAfterSeconds = 120;
+            throw err;
+          }
+          return "ok";
+        },
+        {
+          isRetryable: () => true,
+          config: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5_000 },
+          onRetry: (_err, _attempt, delayMs) => {
+            delays.push(delayMs);
+          },
+        },
+      );
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    expect(attempts).toBe(2);
+    expect(delays).toHaveLength(1);
+    // 120s must be respected even though maxDelayMs is only 5s
+    expect(delays[0]).toBe(120_000);
+  });
+
+  it("clamps oversized Retry-After to the 120s high ceiling", async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    const originalSetTimeout = globalThis.setTimeout;
+    // @ts-expect-error test stub
+    globalThis.setTimeout = ((fn: () => void, _ms?: number) =>
+      originalSetTimeout(fn, 0)) as typeof setTimeout;
+
+    try {
+      await withRetry(
+        async () => {
+          attempts++;
+          if (attempts === 1) {
+            const err = new Error("rate limited") as Error & {
+              retryAfterSeconds: number;
+            };
+            err.retryAfterSeconds = 999;
+            throw err;
+          }
+          return "ok";
+        },
+        {
+          isRetryable: () => true,
+          config: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5_000 },
+          onRetry: (_err, _attempt, delayMs) => {
+            delays.push(delayMs);
+          },
+        },
+      );
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    expect(delays[0]).toBe(120_000);
+  });
+
+  it("applies full-jitter on exponential backoff (delay in [0, expCap])", async () => {
+    const delays: number[] = [];
+    let attempts = 0;
+    const originalSetTimeout = globalThis.setTimeout;
+    // @ts-expect-error test stub
+    globalThis.setTimeout = ((fn: () => void, _ms?: number) =>
+      originalSetTimeout(fn, 0)) as typeof setTimeout;
+
+    try {
+      await withRetry(
+        async () => {
+          attempts++;
+          if (attempts < 3) throw new Error("transient");
+          return "ok";
+        },
+        {
+          isRetryable: () => true,
+          config: { maxAttempts: 3, baseDelayMs: 100, maxDelayMs: 10_000 },
+          onRetry: (_err, _attempt, delayMs) => {
+            delays.push(delayMs);
+          },
+        },
+      );
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+
+    // attempt 0: cap = 100; attempt 1: cap = 200
+    expect(delays).toHaveLength(2);
+    expect(delays[0]!).toBeGreaterThanOrEqual(0);
+    expect(delays[0]!).toBeLessThanOrEqual(100);
+    expect(delays[1]!).toBeGreaterThanOrEqual(0);
+    expect(delays[1]!).toBeLessThanOrEqual(200);
+  });
 });
 
 describe("parseRetryAfterSeconds", () => {
@@ -124,6 +263,30 @@ describe("redact", () => {
     expect(out.lastName).toBe("[REDACTED]");
     expect(out.cardNumber).toBe("[REDACTED]");
   });
+
+  it("allowlists payment identity keys that would otherwise match sensitive substrings", () => {
+    const out = redact({
+      idempotencyKey: "idem_abc",
+      authorizationId: "AUTH-1",
+      gatewayPaymentId: "pi_123",
+      gatewayId: "pi_123",
+      captureId: "CAP-1",
+      orderId: "ORD-1",
+      paymentId: "pay_1",
+      authorization: "Bearer secret",
+      apiKey: "sk_live_xxx",
+    }) as Record<string, unknown>;
+
+    expect(out.idempotencyKey).toBe("idem_abc");
+    expect(out.authorizationId).toBe("AUTH-1");
+    expect(out.gatewayPaymentId).toBe("pi_123");
+    expect(out.gatewayId).toBe("pi_123");
+    expect(out.captureId).toBe("CAP-1");
+    expect(out.orderId).toBe("ORD-1");
+    expect(out.paymentId).toBe("pay_1");
+    expect(out.authorization).toBe("[REDACTED]");
+    expect(out.apiKey).toBe("[REDACTED]");
+  });
 });
 
 describe("createRedactingLogger", () => {
@@ -184,5 +347,11 @@ describe("fingerprintParams", () => {
 
   it("differs when values differ", () => {
     expect(fingerprintParams({ amount: 50 })).not.toBe(fingerprintParams({ amount: 60 }));
+  });
+
+  it("encodes undefined distinctly from null", () => {
+    expect(fingerprintParams(undefined)).not.toBe(fingerprintParams(null));
+    expect(fingerprintParams({ a: undefined })).not.toBe(fingerprintParams({ a: null }));
+    expect(fingerprintParams([undefined])).not.toBe(fingerprintParams([null]));
   });
 });

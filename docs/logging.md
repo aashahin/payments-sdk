@@ -35,12 +35,37 @@ and scrubbed before it reaches your logger. Keys whose names look sensitive
 replaced with `[REDACTED]`. Redaction is recursive and applies to nested objects
 and arrays.
 
+Operational identifiers that would otherwise match those broad substrings are
+**allow-listed** so diagnostic logs stay useful. Examples:
+
+`gateway`, `gatewayName`, `operation`, `operationName`, `event`, `eventName`,
+`eventType`, `status`, `idempotencyKey`, `authorizationId`, `gatewayPaymentId`,
+`gatewayId`, `captureId`, `orderId`, `paymentId`
+
 ```typescript
 import { redact } from '@abshahin/payments-sdk';
 
 redact({ amount: 100, card: { number: '4242...' }, customerEmail: 'a@b.com' });
 // => { amount: 100, card: '[REDACTED]', customerEmail: '[REDACTED]' }
+
+redact({ gatewayId: 'pi_123', idempotencyKey: 'idem_abc', authorization: 'Bearer x' });
+// => { gatewayId: 'pi_123', idempotencyKey: 'idem_abc', authorization: '[REDACTED]' }
 ```
 
-> Note: redaction only applies to the structured `context` object. Never
-> interpolate secrets into the `message` string itself.
+### Residual: message strings are not redacted
+
+Redaction applies **only** to the structured `context` object (second argument).
+The free-form `message` string is passed through **unchanged**. Never
+interpolate secrets, card data, tokens, or PII into the message itself:
+
+```typescript
+// Bad — secret lands in the message and is not redacted
+logger.error(`charge failed token=${token}`);
+
+// Good — secret only in structured context (redacted)
+logger.error('charge failed', { token });
+```
+
+This message-string non-redaction is an intentional residual: scrubbing free
+text would require fragile heuristics and false positives. Keep secrets out of
+messages at the call site.

@@ -83,6 +83,14 @@ export function parseRetryAfterSeconds(
     : undefined;
 }
 
+/**
+ * High ceiling for provider-supplied Retry-After waits. Separate from
+ * `maxDelayMs` (which caps exponential backoff) so a Retry-After: 120 header
+ * is respected even when maxDelayMs is only a few seconds. Oversized values
+ * are still clamped so a malformed header cannot hang the process indefinitely.
+ */
+const RETRY_AFTER_MAX_MS = 120_000;
+
 function defaultRetryDelayMs(
   error: unknown,
   attempt: number,
@@ -90,13 +98,19 @@ function defaultRetryDelayMs(
 ): number {
   const retryAfterSeconds = extractRetryAfterSeconds(error);
   if (retryAfterSeconds !== undefined) {
-    return Math.min(retryAfterSeconds * 1000, config.maxDelayMs);
+    const retryAfterMs = retryAfterSeconds * 1000;
+    // Honor provider Retry-After; do not clamp it down to maxDelayMs.
+    const ceiling = Math.max(config.maxDelayMs, RETRY_AFTER_MAX_MS);
+    return Math.min(retryAfterMs, ceiling);
   }
 
-  return Math.min(
+  // Mild full-jitter on the exponential backoff path only:
+  // delay = random(0 .. min(base * 2^attempt, maxDelay))
+  const expCap = Math.min(
     config.baseDelayMs * Math.pow(2, attempt),
     config.maxDelayMs,
   );
+  return Math.floor(Math.random() * (expCap + 1));
 }
 
 /**
@@ -107,6 +121,8 @@ export async function withRetry<T>(
   options: WithRetryOptions,
 ): Promise<T> {
   const config: RetryConfig = { ...DEFAULT_RETRY_CONFIG, ...options.config };
+  // Guard against maxAttempts <= 0 (would skip the loop and throw undefined).
+  config.maxAttempts = Math.max(1, config.maxAttempts);
   let lastError: unknown;
 
   for (let attempt = 0; attempt < config.maxAttempts; attempt++) {

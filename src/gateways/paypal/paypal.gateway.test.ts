@@ -146,58 +146,48 @@ describe('PayPalGateway', () => {
     // ═══════════════════════════════════════════════════════════════════════════
 
     describe('verifyWebhook', () => {
-        it('should warn and return false when webhookId is not configured', () => {
-            const warnings: string[] = [];
+        it('should throw InvalidRequestError directing callers to verifyWebhookAsync', () => {
+            expect(() => gateway.verifyWebhook({}, undefined, {})).toThrow(InvalidRequestError);
+            expect(() => gateway.verifyWebhook({}, undefined, {})).toThrow(
+                /verifyWebhookAsync|handleWebhook/,
+            );
+        });
+
+        it('should throw even when webhookId is not configured (sync path is unsupported)', () => {
             const gatewayNoWebhookId = new PayPalGateway(
                 { clientId: 'test', clientSecret: 'test' },
                 hooksManager,
-                captureLogger(warnings),
             );
 
-            const result = gatewayNoWebhookId.verifyWebhook({}, undefined, {});
-
-            expect(result).toBe(false);
-            expect(warnings.length).toBeGreaterThan(0);
-        });
-
-        it('should return false when required headers are missing', () => {
-            const result = gateway.verifyWebhook({}, undefined, {});
-            expect(result).toBe(false);
-        });
-
-        it('should return false with warning for sync verification (requires async)', () => {
-            const warnings: string[] = [];
-            const warnGateway = new PayPalGateway(
-                PAYPAL_TEST_CONFIG,
-                hooksManager,
-                captureLogger(warnings),
+            expect(() => gatewayNoWebhookId.verifyWebhook({}, undefined, {})).toThrow(
+                InvalidRequestError,
             );
-            const result = warnGateway.verifyWebhook(
-                { id: 'test' },
-                'sig',
-                {
-                    'paypal-transmission-id': 'trans-123',
-                    'paypal-transmission-time': '2024-01-15T10:00:00Z',
-                    'paypal-transmission-sig': 'signature',
-                    'paypal-cert-url': 'https://api.paypal.com/cert',
-                    'paypal-auth-algo': 'SHA256withRSA',
-                }
-            );
-
-            expect(result).toBe(false);
-            expect(warnings.some((message) => message.includes('verifyWebhookAsync'))).toBe(true);
         });
     });
 
     describe('verifyWebhookAsync', () => {
-        it('should return false when webhookId is not configured', async () => {
+        /** Fresh transmission_time so age-based replay rejection does not fire. */
+        const validWebhookHeaders = (): Record<string, string> => ({
+            'paypal-transmission-id': 'trans-123',
+            'paypal-transmission-time': new Date().toISOString(),
+            'paypal-transmission-sig': 'signature',
+            'paypal-cert-url': 'https://api.paypal.com/cert',
+            'paypal-auth-algo': 'SHA256withRSA',
+        });
+
+        it('should throw InvalidRequestError when webhookId is not configured', async () => {
             const gatewayNoWebhookId = new PayPalGateway(
                 { clientId: 'test', clientSecret: 'test' },
                 hooksManager
             );
 
-            const result = await gatewayNoWebhookId.verifyWebhookAsync({}, {});
-            expect(result).toBe(false);
+            await expect(
+                gatewayNoWebhookId.verifyWebhookAsync({}, {}),
+            ).rejects.toThrow(InvalidRequestError);
+
+            await expect(
+                gatewayNoWebhookId.verifyWebhookAsync({}, {}),
+            ).rejects.toThrow(/paypal\.webhookId is required for webhook verification/);
         });
 
         it('should return false when headers are missing', async () => {
@@ -215,16 +205,108 @@ describe('PayPalGateway', () => {
             const result = await gateway.verifyWebhookAsync(
                 { id: 'event-123' },
                 {
+                    ...validWebhookHeaders(),
                     'paypal-transmission-id': 'x'.repeat(51),
-                    'paypal-transmission-time': '2024-01-15T10:00:00Z',
-                    'paypal-transmission-sig': 'signature',
-                    'paypal-cert-url': 'https://api.paypal.com/cert',
-                    'paypal-auth-algo': 'SHA256withRSA',
                 }
             );
 
             expect(result).toBe(false);
             expect(fetchCount).toBe(0);
+        });
+
+        it('should reject non-PayPal cert URLs before calling the verify API', async () => {
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            const result = await gateway.verifyWebhookAsync(
+                { id: 'event-123' },
+                {
+                    ...validWebhookHeaders(),
+                    'paypal-cert-url': 'https://evil.example.com/cert',
+                }
+            );
+
+            expect(result).toBe(false);
+            expect(fetchCount).toBe(0);
+        });
+
+        it('should reject non-HTTPS PayPal cert URLs before calling the verify API', async () => {
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            const result = await gateway.verifyWebhookAsync(
+                { id: 'event-123' },
+                {
+                    ...validWebhookHeaders(),
+                    'paypal-cert-url': 'http://api.paypal.com/cert',
+                }
+            );
+
+            expect(result).toBe(false);
+            expect(fetchCount).toBe(0);
+        });
+
+        it('should reject aged transmission_time without calling PayPal', async () => {
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            const result = await warnGateway.verifyWebhookAsync(
+                { id: 'event-123' },
+                {
+                    ...validWebhookHeaders(),
+                    // Older than 15 minutes
+                    'paypal-transmission-time': new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+                }
+            );
+
+            expect(result).toBe(false);
+            expect(fetchCount).toBe(0);
+            expect(warnings.some((message) =>
+                message.includes('transmission_time') && message.includes('older'),
+            )).toBe(true);
+        });
+
+        it('should reject unparseable transmission_time without calling PayPal', async () => {
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            const result = await warnGateway.verifyWebhookAsync(
+                { id: 'event-123' },
+                {
+                    ...validWebhookHeaders(),
+                    'paypal-transmission-time': 'not-a-date',
+                }
+            );
+
+            expect(result).toBe(false);
+            expect(fetchCount).toBe(0);
+            expect(warnings.some((message) =>
+                message.includes('transmission_time') && message.includes('unparseable'),
+            )).toBe(true);
         });
 
         it('should call PayPal API and return true on SUCCESS', async () => {
@@ -243,16 +325,167 @@ describe('PayPalGateway', () => {
 
             const result = await gateway.verifyWebhookAsync(
                 { id: 'event-123', event_type: 'PAYMENT.CAPTURE.COMPLETED' },
-                {
-                    'paypal-transmission-id': 'trans-123',
-                    'paypal-transmission-time': '2024-01-15T10:00:00Z',
-                    'paypal-transmission-sig': 'signature',
-                    'paypal-cert-url': 'https://api.paypal.com/cert',
-                    'paypal-auth-algo': 'SHA256withRSA',
-                }
+                validWebhookHeaders()
             );
 
             expect(result).toBe(true);
+        });
+
+        it('should embed raw string webhook_event without re-serializing key order', async () => {
+            let rawVerifyBody: string | null = null;
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                if (url.includes('verify-webhook-signature') && init?.body) {
+                    rawVerifyBody = init.body as string;
+                }
+
+                return createMockResponse({ verification_status: 'SUCCESS' });
+            }) as unknown as typeof fetch;
+
+            // Non-alphabetical key order + spacing that stringify would normalize away
+            const rawJson =
+                '{"z_key":1,"id":"event-string","event_type":"PAYMENT.CAPTURE.COMPLETED","a_key":2}';
+            const result = await gateway.verifyWebhookAsync(
+                rawJson,
+                validWebhookHeaders()
+            );
+
+            expect(result).toBe(true);
+            expect(rawVerifyBody).not.toBeNull();
+            // Original substring must appear after "webhook_event": (no re-parse/stringify)
+            expect(rawVerifyBody!).toContain('"webhook_event":' + rawJson);
+            const parsed = JSON.parse(rawVerifyBody!);
+            expect(parsed.webhook_event).toEqual({
+                z_key: 1,
+                id: 'event-string',
+                event_type: 'PAYMENT.CAPTURE.COMPLETED',
+                a_key: 2,
+            });
+        });
+
+        it('should embed Buffer payload webhook_event as original JSON text', async () => {
+            let rawVerifyBody: string | null = null;
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                if (url.includes('verify-webhook-signature') && init?.body) {
+                    rawVerifyBody = init.body as string;
+                }
+
+                return createMockResponse({ verification_status: 'SUCCESS' });
+            }) as unknown as typeof fetch;
+
+            const rawJson =
+                '{"id":"event-buffer","event_type":"PAYMENT.CAPTURE.COMPLETED","zz":true}';
+            const result = await gateway.verifyWebhookAsync(
+                Buffer.from(rawJson, 'utf8'),
+                validWebhookHeaders()
+            );
+
+            expect(result).toBe(true);
+            expect(rawVerifyBody).toContain('"webhook_event":' + rawJson);
+        });
+
+        it('should embed raw body with trailing newline as exact untrimmed text', async () => {
+            let rawVerifyBody: string | null = null;
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                if (url.includes('verify-webhook-signature') && init?.body) {
+                    rawVerifyBody = init.body as string;
+                }
+
+                return createMockResponse({ verification_status: 'SUCCESS' });
+            }) as unknown as typeof fetch;
+
+            // Trailing newline is common from HTTP bodies; must not be stripped from embed.
+            const rawJson =
+                '{"id":"event-newline","event_type":"PAYMENT.CAPTURE.COMPLETED"}\n';
+            const result = await gateway.verifyWebhookAsync(
+                rawJson,
+                validWebhookHeaders()
+            );
+
+            expect(result).toBe(true);
+            expect(rawVerifyBody).not.toBeNull();
+            expect(rawVerifyBody!).toContain('"webhook_event":' + rawJson);
+            // Ensure we did not trim the trailing newline away before embed
+            expect(rawVerifyBody!).toContain(
+                '"webhook_event":{"id":"event-newline","event_type":"PAYMENT.CAPTURE.COMPLETED"}\n}',
+            );
+        });
+
+        it('should warn when verifying with an already-parsed object payload', async () => {
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                return createMockResponse({ verification_status: 'SUCCESS' });
+            }) as unknown as typeof fetch;
+
+            const result = await warnGateway.verifyWebhookAsync(
+                { id: 'event-object', event_type: 'PAYMENT.CAPTURE.COMPLETED' },
+                validWebhookHeaders()
+            );
+
+            expect(result).toBe(true);
+            expect(warnings.some((message) =>
+                message.includes('parsed object') && message.includes('re-serializes'),
+            )).toBe(true);
+        });
+
+        it('should return false for invalid JSON string payloads without calling PayPal', async () => {
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            const result = await gateway.verifyWebhookAsync(
+                '{not-json',
+                validWebhookHeaders()
+            );
+
+            expect(result).toBe(false);
+            expect(fetchCount).toBe(0);
         });
 
         it('should return false on FAILURE verification status', async () => {
@@ -271,13 +504,7 @@ describe('PayPalGateway', () => {
 
             const result = await gateway.verifyWebhookAsync(
                 { id: 'event-123' },
-                {
-                    'paypal-transmission-id': 'trans-123',
-                    'paypal-transmission-time': '2024-01-15T10:00:00Z',
-                    'paypal-transmission-sig': 'signature',
-                    'paypal-cert-url': 'https://api.paypal.com/cert',
-                    'paypal-auth-algo': 'SHA256withRSA',
-                }
+                validWebhookHeaders()
             );
 
             expect(result).toBe(false);
@@ -307,13 +534,7 @@ describe('PayPalGateway', () => {
             await expect(
                 gateway.verifyWebhookAsync(
                     { id: 'event-123' },
-                    {
-                        'paypal-transmission-id': 'trans-123',
-                        'paypal-transmission-time': '2024-01-15T10:00:00Z',
-                        'paypal-transmission-sig': 'signature',
-                        'paypal-cert-url': 'https://api.paypal.com/cert',
-                        'paypal-auth-algo': 'SHA256withRSA',
-                    }
+                    validWebhookHeaders()
                 )
             ).rejects.toThrow(GatewayApiError);
         });
@@ -337,13 +558,7 @@ describe('PayPalGateway', () => {
             await expect(
                 gateway.verifyWebhookAsync(
                     { id: 'event-123' },
-                    {
-                        'paypal-transmission-id': 'trans-123',
-                        'paypal-transmission-time': '2024-01-15T10:00:00Z',
-                        'paypal-transmission-sig': 'signature',
-                        'paypal-cert-url': 'https://api.paypal.com/cert',
-                        'paypal-auth-algo': 'SHA256withRSA',
-                    }
+                    validWebhookHeaders()
                 )
             ).rejects.toThrow(NetworkError);
             expect(fetchCount).toBe(3);
@@ -429,6 +644,166 @@ describe('PayPalGateway', () => {
             const event = gateway.parseWebhookEvent(payload);
 
             expect(event.gatewayPaymentId).toBe('capture-from-supplementary');
+        });
+
+        it('should prefer the last capture when multiple captures are present on an order webhook', () => {
+            const payload = {
+                id: 'WH-multi-capture',
+                event_type: 'CHECKOUT.ORDER.COMPLETED',
+                create_time: '2024-06-15T16:00:00Z',
+                resource_type: 'checkout-order',
+                resource: {
+                    id: 'order-multi',
+                    status: 'COMPLETED',
+                    purchase_units: [
+                        {
+                            amount: {
+                                currency_code: 'USD',
+                                value: '100.00',
+                            },
+                            payments: {
+                                captures: [
+                                    {
+                                        id: 'CAPTURE-FIRST',
+                                        status: 'COMPLETED',
+                                        amount: {
+                                            currency_code: 'USD',
+                                            value: '40.00',
+                                        },
+                                    },
+                                    {
+                                        id: 'CAPTURE-LAST',
+                                        status: 'COMPLETED',
+                                        amount: {
+                                            currency_code: 'USD',
+                                            value: '60.00',
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            };
+
+            const event = gateway.parseWebhookEvent(payload);
+
+            expect(event.gatewayPaymentId).toBe('CAPTURE-LAST');
+            expect(event.amount).toBe(60);
+            expect(event.status).toBe('paid');
+        });
+
+        it('should prefer the capture with the latest create_time/update_time over array order', () => {
+            const payload = {
+                id: 'WH-multi-capture-times',
+                event_type: 'CHECKOUT.ORDER.COMPLETED',
+                create_time: '2024-06-15T16:00:00Z',
+                resource_type: 'checkout-order',
+                resource: {
+                    id: 'order-multi-times',
+                    status: 'COMPLETED',
+                    purchase_units: [
+                        {
+                            amount: {
+                                currency_code: 'USD',
+                                value: '100.00',
+                            },
+                            payments: {
+                                captures: [
+                                    {
+                                        id: 'CAPTURE-NEWER',
+                                        status: 'COMPLETED',
+                                        create_time: '2024-06-15T18:00:00Z',
+                                        update_time: '2024-06-15T18:30:00Z',
+                                        amount: {
+                                            currency_code: 'USD',
+                                            value: '40.00',
+                                        },
+                                    },
+                                    {
+                                        id: 'CAPTURE-OLDER-LAST-IN-ARRAY',
+                                        status: 'COMPLETED',
+                                        create_time: '2024-06-15T12:00:00Z',
+                                        update_time: '2024-06-15T12:30:00Z',
+                                        amount: {
+                                            currency_code: 'USD',
+                                            value: '60.00',
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            };
+
+            const event = gateway.parseWebhookEvent(payload);
+
+            expect(event.gatewayPaymentId).toBe('CAPTURE-NEWER');
+            expect(event.amount).toBe(40);
+            expect(event.status).toBe('paid');
+        });
+
+        it('should map CHECKOUT.ORDER.COMPLETED without a capture to approved (not paid)', () => {
+            const payload = {
+                id: 'WH-order-completed-no-capture',
+                event_type: 'CHECKOUT.ORDER.COMPLETED',
+                create_time: '2024-06-15T16:00:00Z',
+                resource_type: 'checkout-order',
+                resource: {
+                    id: 'order-auth-only',
+                    status: 'COMPLETED',
+                    purchase_units: [
+                        {
+                            amount: {
+                                currency_code: 'USD',
+                                value: '25.00',
+                            },
+                            payments: {
+                                authorizations: [
+                                    {
+                                        id: 'AUTH-ONLY',
+                                        status: 'CREATED',
+                                        amount: {
+                                            currency_code: 'USD',
+                                            value: '25.00',
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            };
+
+            const event = gateway.parseWebhookEvent(payload);
+
+            expect(event.status).toBe('approved');
+            expect(event.gatewayPaymentId).toBe('order-auth-only');
+            expect(event.amount).toBe(25);
+        });
+
+        it('should use authorization resource id when AUTHORIZATION.CAPTURED has no capture id', () => {
+            const payload = {
+                id: 'WH-auth-captured',
+                event_type: 'PAYMENT.AUTHORIZATION.CAPTURED',
+                create_time: '2024-06-15T16:00:00Z',
+                resource_type: 'authorization',
+                resource: {
+                    id: 'AUTH-NO-CAPTURE-LINK',
+                    status: 'CAPTURED',
+                    amount: {
+                        currency_code: 'USD',
+                        value: '50.00',
+                    },
+                },
+            };
+
+            const event = gateway.parseWebhookEvent(payload);
+
+            // Auth id is not refundable — callers must use a capture ID for refunds
+            expect(event.gatewayPaymentId).toBe('AUTH-NO-CAPTURE-LINK');
+            expect(event.status).toBe('paid');
         });
 
         it('should extract custom_id from purchase_units', () => {
@@ -741,6 +1116,33 @@ describe('PayPalGateway', () => {
                 gateway.parseWebhookEvent(null);
             }).toThrow(GatewayApiError);
         });
+
+        it('should parse string and Buffer JSON payloads', () => {
+            const payload = {
+                id: 'WH-event-raw',
+                event_type: 'PAYMENT.CAPTURE.COMPLETED',
+                create_time: '2024-06-15T14:30:00Z',
+                resource_type: 'capture',
+                resource: {
+                    id: 'capture-raw',
+                    status: 'COMPLETED',
+                    amount: {
+                        currency_code: 'USD',
+                        value: '9.99',
+                    },
+                },
+            };
+
+            const fromString = gateway.parseWebhookEvent(JSON.stringify(payload));
+            expect(fromString.gatewayPaymentId).toBe('capture-raw');
+            expect(fromString.status).toBe('paid');
+
+            const fromBuffer = gateway.parseWebhookEvent(
+                Buffer.from(JSON.stringify(payload), 'utf8'),
+            );
+            expect(fromBuffer.gatewayPaymentId).toBe('capture-raw');
+            expect(fromBuffer.status).toBe('paid');
+        });
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -765,6 +1167,19 @@ describe('PayPalGateway', () => {
             });
         }
 
+        it('should warn when mapping an unknown order status', () => {
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+
+            const mapped = (warnGateway as any).mapStatus('UNKNOWN_STATUS');
+            expect(mapped).toBe('pending');
+            expect(warnings.some((message) => message.includes('Unmapped order status'))).toBe(true);
+        });
+
         const resourceStatusMappings = [
             { paypal: 'CREATED', expected: 'authorized' },
             { paypal: 'COMPLETED', expected: 'paid' },
@@ -788,6 +1203,84 @@ describe('PayPalGateway', () => {
                 expect(mapped).toBe(expected);
             });
         }
+
+        it('should warn when mapping an unknown resource status', () => {
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+
+            const mapped = (warnGateway as any).mapResourceStatus('UNKNOWN');
+            expect(mapped).toBe('pending');
+            expect(warnings.some((message) => message.includes('Unmapped resource status'))).toBe(true);
+        });
+
+        it('should map unknown terminal-looking resource statuses to failed (fail-closed)', () => {
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+
+            const mapped = (warnGateway as any).mapResourceStatus('INSTRUMENT_DECLINED_STATE');
+            expect(mapped).toBe('failed');
+            expect(warnings.some((message) =>
+                message.includes('Unmapped resource status') && message.includes('failed'),
+            )).toBe(true);
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Error Mapping Tests
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    describe('Error Mapping', () => {
+        it('should map CARD_EXPIRED to CardDeclinedError', async () => {
+            globalThis.fetch = createMockFetch(
+                {
+                    name: 'UNPROCESSABLE_ENTITY',
+                    message: 'The requested action could not be performed',
+                    details: [
+                        { issue: 'CARD_EXPIRED', description: 'The card is expired' },
+                    ],
+                },
+                false,
+                422
+            );
+
+            await expect(
+                gateway.createPayment({
+                    amount: 10,
+                    currency: 'USD',
+                    callbackUrl: 'https://example.com/callback',
+                })
+            ).rejects.toThrow(CardDeclinedError);
+        });
+
+        it('should map INSTRUMENT_DECLINED to CardDeclinedError', async () => {
+            globalThis.fetch = createMockFetch(
+                {
+                    name: 'UNPROCESSABLE_ENTITY',
+                    message: 'The requested action could not be performed',
+                    details: [
+                        { issue: 'INSTRUMENT_DECLINED', description: 'The instrument was declined' },
+                    ],
+                },
+                false,
+                422
+            );
+
+            await expect(
+                gateway.createPayment({
+                    amount: 10,
+                    currency: 'USD',
+                    callbackUrl: 'https://example.com/callback',
+                })
+            ).rejects.toThrow(CardDeclinedError);
+        });
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -864,6 +1357,115 @@ describe('PayPalGateway', () => {
                     },
                 },
             });
+        });
+
+        it('should use returnUrl and cancelUrl when provided', async () => {
+            let capturedBody: unknown = null;
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                if (init?.body) {
+                    capturedBody = JSON.parse(init.body as string);
+                }
+
+                return createMockResponse({
+                    id: 'ORDER-RETURN-CANCEL',
+                    status: 'CREATED',
+                    links: [
+                        { rel: 'payer-action', href: 'https://paypal.com/checkoutnow?token=ORDER-RETURN-CANCEL' },
+                    ],
+                });
+            }) as unknown as typeof fetch;
+
+            const result = await gateway.createPayment({
+                amount: 10,
+                currency: 'USD',
+                callbackUrl: 'https://example.com/callback',
+                returnUrl: 'https://example.com/success',
+                cancelUrl: 'https://example.com/cancel',
+            });
+
+            expect(result.success).toBe(true);
+            expect((capturedBody as any).payment_source.paypal.experience_context).toMatchObject({
+                return_url: 'https://example.com/success',
+                cancel_url: 'https://example.com/cancel',
+                shipping_preference: 'NO_SHIPPING',
+            });
+        });
+
+        it('should allow returnUrl-only create and use returnUrl for both return_url and cancel_url', async () => {
+            let capturedBody: unknown = null;
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                if (init?.body) {
+                    capturedBody = JSON.parse(init.body as string);
+                }
+
+                return createMockResponse({
+                    id: 'ORDER-RETURN-ONLY',
+                    status: 'CREATED',
+                    links: [
+                        { rel: 'payer-action', href: 'https://paypal.com/checkoutnow?token=ORDER-RETURN-ONLY' },
+                    ],
+                });
+            }) as unknown as typeof fetch;
+
+            const result = await gateway.createPayment({
+                amount: 10,
+                currency: 'USD',
+                returnUrl: 'https://example.com/return',
+            } as CreatePaymentParams);
+
+            expect(result.success).toBe(true);
+            expect((capturedBody as any).payment_source.paypal.experience_context).toMatchObject({
+                return_url: 'https://example.com/return',
+                cancel_url: 'https://example.com/return',
+            });
+        });
+
+        it('should reject SET_PROVIDED_ADDRESS until shipping address params are supported', async () => {
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            await expect(
+                gateway.createPayment({
+                    amount: 10,
+                    currency: 'USD',
+                    callbackUrl: 'https://example.com/callback',
+                    paypalShippingPreference: 'SET_PROVIDED_ADDRESS',
+                }),
+            ).rejects.toThrow(InvalidRequestError);
+
+            await expect(
+                gateway.createPayment({
+                    amount: 10,
+                    currency: 'USD',
+                    callbackUrl: 'https://example.com/callback',
+                    paypalShippingPreference: 'SET_PROVIDED_ADDRESS',
+                }),
+            ).rejects.toThrow(/SET_PROVIDED_ADDRESS is not supported/);
+
+            expect(fetchCount).toBe(0);
         });
 
         it('should include PayPal-Request-Id header for idempotency', async () => {
@@ -1059,6 +1661,53 @@ describe('PayPalGateway', () => {
                     metadata: { paymentId: 123 },
                 })
             ).rejects.toThrow('PayPal metadata.paymentId must be a non-empty string');
+
+            expect(fetchCount).toBe(0);
+        });
+
+        it('should reject descriptions longer than PayPal supports before calling PayPal', async () => {
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            await expect(
+                gateway.createPayment({
+                    amount: 10,
+                    currency: 'USD',
+                    callbackUrl: 'https://example.com/callback',
+                    description: 'x'.repeat(128),
+                })
+            ).rejects.toThrow(InvalidRequestError);
+
+            await expect(
+                gateway.createPayment({
+                    amount: 10,
+                    currency: 'USD',
+                    callbackUrl: 'https://example.com/callback',
+                    description: 'x'.repeat(128),
+                })
+            ).rejects.toThrow('PayPal description must be 127 characters or fewer');
+
+            expect(fetchCount).toBe(0);
+        });
+
+        it('should reject orderIds longer than PayPal reference_id supports before calling PayPal', async () => {
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            await expect(
+                gateway.createPayment({
+                    amount: 10,
+                    currency: 'USD',
+                    callbackUrl: 'https://example.com/callback',
+                    orderId: 'x'.repeat(257),
+                })
+            ).rejects.toThrow('PayPal orderId (reference_id) must be 256 characters or fewer');
 
             expect(fetchCount).toBe(0);
         });
@@ -1294,6 +1943,78 @@ describe('PayPalGateway', () => {
             expect((result.rawResponse as any).orderId).toBe('ORDER-789');
         });
 
+        it('should return success true with pending status for pending captures and warn', async () => {
+            const warnings: string[] = [];
+            const warnGateway = new PayPalGateway(
+                PAYPAL_TEST_CONFIG,
+                hooksManager,
+                captureLogger(warnings),
+            );
+
+            globalThis.fetch = createMockFetch({
+                id: 'ORDER-PENDING-CAPTURE',
+                status: 'COMPLETED',
+                purchase_units: [
+                    {
+                        payments: {
+                            captures: [
+                                {
+                                    id: 'CAPTURE-PENDING',
+                                    status: 'PENDING',
+                                    amount: {
+                                        currency_code: 'USD',
+                                        value: '10.00',
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            });
+
+            const result = await warnGateway.capturePayment({
+                gatewayPaymentId: 'ORDER-PENDING-CAPTURE',
+            });
+
+            expect(result.success).toBe(true);
+            expect(result.status).toBe('pending');
+            expect(result.captureId).toBe('CAPTURE-PENDING');
+            expect(warnings.some((message) =>
+                message.includes('pending status') && message.includes('do not fulfill'),
+            )).toBe(true);
+        });
+
+        it('should set success false when capture maps to failed', async () => {
+            globalThis.fetch = createMockFetch({
+                id: 'ORDER-FAILED-CAPTURE',
+                status: 'COMPLETED',
+                purchase_units: [
+                    {
+                        payments: {
+                            captures: [
+                                {
+                                    id: 'CAPTURE-DENIED',
+                                    status: 'DENIED',
+                                    amount: {
+                                        currency_code: 'USD',
+                                        value: '10.00',
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            });
+
+            const result = await gateway.capturePayment({
+                gatewayPaymentId: 'ORDER-FAILED-CAPTURE',
+            });
+
+            expect(result.success).toBe(false);
+            expect(result.status).toBe('failed');
+            expect(result.captureId).toBe('CAPTURE-DENIED');
+        });
+
         it('should reject successful order captures without capture details', async () => {
             globalThis.fetch = createMockFetch({
                 id: 'ORDER-NO-CAPTURE',
@@ -1394,18 +2115,103 @@ describe('PayPalGateway', () => {
             });
 
             expect(capturedUrl as unknown as string).toContain('/v2/payments/authorizations/AUTH-123/capture');
+            // amount set => partial; default final_capture false unless paypalFinalCapture === true
             expect(capturedBody).toEqual({
                 amount: {
                     value: '20.00',
                     currency_code: 'USD',
                 },
-                final_capture: true,
+                final_capture: false,
             });
             expect(result.gatewayId).toBe('CAPTURE-AUTH');
             expect(result.captureId).toBe('CAPTURE-AUTH');
             expect(result.authorizationId).toBe('AUTH-123');
             expect(result.status).toBe('paid');
             expect(result.amount).toBe(20);
+        });
+
+        it('should default partial authorization captures to final_capture false', async () => {
+            let capturedBody: unknown = null;
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                capturedBody = JSON.parse(init?.body as string);
+
+                return createMockResponse({
+                    id: 'CAPTURE-PARTIAL-DEFAULT',
+                    status: 'COMPLETED',
+                    amount: {
+                        currency_code: 'USD',
+                        value: '10.00',
+                    },
+                });
+            }) as unknown as typeof fetch;
+
+            await gateway.capturePayment({
+                gatewayPaymentId: 'AUTH-PARTIAL-DEFAULT',
+                amount: 10,
+                currency: 'USD',
+                paypalCaptureType: 'authorization',
+                // paypalFinalCapture omitted
+            });
+
+            expect(capturedBody).toEqual({
+                amount: {
+                    value: '10.00',
+                    currency_code: 'USD',
+                },
+                final_capture: false,
+            });
+        });
+
+        it('should allow final_capture true on partial amount when paypalFinalCapture is true', async () => {
+            let capturedBody: unknown = null;
+
+            globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+                const url = typeof input === 'string' ? input : (input as Request).url;
+
+                if (url.includes('oauth2/token')) {
+                    return createMockResponse({
+                        access_token: 'test_token',
+                        expires_in: 3600,
+                    });
+                }
+
+                capturedBody = JSON.parse(init?.body as string);
+
+                return createMockResponse({
+                    id: 'CAPTURE-PARTIAL-FINAL',
+                    status: 'COMPLETED',
+                    amount: {
+                        currency_code: 'USD',
+                        value: '10.00',
+                    },
+                });
+            }) as unknown as typeof fetch;
+
+            await gateway.capturePayment({
+                gatewayPaymentId: 'AUTH-PARTIAL-FINAL',
+                amount: 10,
+                currency: 'USD',
+                paypalCaptureType: 'authorization',
+                paypalFinalCapture: true,
+            });
+
+            expect(capturedBody).toEqual({
+                amount: {
+                    value: '10.00',
+                    currency_code: 'USD',
+                },
+                final_capture: true,
+            });
         });
 
         it('should reject amount on order captures because PayPal only supports partial authorization captures', async () => {
@@ -1537,6 +2343,37 @@ describe('PayPalGateway', () => {
             expect((result.rawResponse as any).authorizationId).toBe('AUTH-XYZ');
         });
 
+        it('should set success false when authorize maps to failed', async () => {
+            globalThis.fetch = createMockFetch({
+                id: 'ORDER-AUTH-DENIED',
+                status: 'COMPLETED',
+                purchase_units: [
+                    {
+                        payments: {
+                            authorizations: [
+                                {
+                                    id: 'AUTH-DENIED',
+                                    status: 'DENIED',
+                                    amount: {
+                                        currency_code: 'USD',
+                                        value: '10.00',
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            });
+
+            const result = await gateway.authorizePayment({
+                gatewayPaymentId: 'ORDER-AUTH-DENIED',
+            });
+
+            expect(result.status).toBe('failed');
+            expect(result.success).toBe(false);
+            expect(result.authorizationId).toBe('AUTH-DENIED');
+        });
+
         it('should reject successful authorize responses without authorization details', async () => {
             globalThis.fetch = createMockFetch({
                 id: 'ORDER-AUTH-MISSING',
@@ -1622,6 +2459,23 @@ describe('PayPalGateway', () => {
             ).rejects.toThrow('Currency is required for partial PayPal refunds');
         });
 
+        it('should reject refund reasons longer than PayPal note_to_payer supports', async () => {
+            let fetchCount = 0;
+            globalThis.fetch = mock(async () => {
+                fetchCount++;
+                return createMockResponse({});
+            }) as unknown as typeof fetch;
+
+            await expect(
+                gateway.refundPayment({
+                    gatewayPaymentId: 'CAPTURE-123',
+                    reason: 'x'.repeat(256),
+                })
+            ).rejects.toThrow('PayPal refund reason (note_to_payer) must be 255 characters or fewer');
+
+            expect(fetchCount).toBe(0);
+        });
+
         it('should refund successfully with currency', async () => {
             let capturedHeaders: Record<string, string> | null = null;
 
@@ -1669,7 +2523,7 @@ describe('PayPalGateway', () => {
             ).rejects.toThrow(GatewayApiError);
         });
 
-        it('should map failed refund statuses to failed', async () => {
+        it('should map failed refund statuses to failed with success false', async () => {
             globalThis.fetch = createMockFetch({
                 id: 'REFUND-FAILED',
                 status: 'FAILED',
@@ -1680,6 +2534,32 @@ describe('PayPalGateway', () => {
             });
 
             expect(result.status).toBe('failed');
+            expect(result.success).toBe(false);
+        });
+
+        it('should clarify that refunds need a capture ID when the resource is not found', async () => {
+            globalThis.fetch = createMockFetch(
+                {
+                    name: 'RESOURCE_NOT_FOUND',
+                    message: 'The specified resource does not exist.',
+                },
+                false,
+                404,
+            );
+
+            await expect(
+                gateway.refundPayment({
+                    gatewayPaymentId: 'ORDER-NOT-A-CAPTURE',
+                }),
+            ).rejects.toThrow(ResourceNotFoundError);
+
+            await expect(
+                gateway.refundPayment({
+                    gatewayPaymentId: 'ORDER-NOT-A-CAPTURE',
+                }),
+            ).rejects.toThrow(
+                /PayPal refund requires capture ID from capturePayment, not order\/authorization ID/,
+            );
         });
 
         it('should refund full amount without currency', async () => {
@@ -2189,6 +3069,47 @@ describe('PayPalGateway', () => {
 
             expect(beforeOperation).toBe('getPayment');
             expect(afterOperation).toBe('getPayment');
+        });
+
+        it('should prefer the last capture when getPayment returns multiple captures', async () => {
+            globalThis.fetch = createMockFetch({
+                id: 'ORDER-MULTI-CAP',
+                status: 'COMPLETED',
+                purchase_units: [
+                    {
+                        amount: {
+                            currency_code: 'USD',
+                            value: '100.00',
+                        },
+                        payments: {
+                            captures: [
+                                {
+                                    id: 'CAP-OLD',
+                                    status: 'COMPLETED',
+                                    amount: {
+                                        currency_code: 'USD',
+                                        value: '40.00',
+                                    },
+                                },
+                                {
+                                    id: 'CAP-NEW',
+                                    status: 'COMPLETED',
+                                    amount: {
+                                        currency_code: 'USD',
+                                        value: '60.00',
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ],
+            });
+
+            const result = await gateway.getPayment({ gatewayPaymentId: 'ORDER-MULTI-CAP' });
+
+            expect(result.captureId).toBe('CAP-NEW');
+            expect(result.amount).toBe(60);
+            expect(result.status).toBe('paid');
         });
 
         it('should retrieve capture details when gatewayPaymentId is a PayPal capture ID', async () => {
