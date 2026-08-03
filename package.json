@@ -27,7 +27,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.9.3"
+    "@types/node": "^25.0.3",
+    "typescript": "7.0.2"
   },
   "peerDependencies": {},
   "keywords": [
