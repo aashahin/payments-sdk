@@ -1,8 +1,6 @@
 // file: packages/payments/src/gateways/moyasar.gateway.ts
 
-import { Buffer } from "node:buffer";
-import { timingSafeEqual } from "node:crypto";
-
+import { getSyncCrypto } from "../../runtime/sync-crypto";
 import { BaseGateway } from "../base.gateway";
 import type {
   CaptureParams,
@@ -855,11 +853,19 @@ export class MoyasarGateway extends BaseGateway {
       return false;
     }
 
+    const crypto = getSyncCrypto();
+    if (!crypto) {
+      this.logger.warn(
+        "[Moyasar] Synchronous webhook verify is unavailable in this runtime",
+      );
+      return false;
+    }
+
     if (!this.isRecord(payload) || typeof payload.secret_token !== "string") {
       return false;
     }
 
-    return this.constantTimeEquals(
+    return crypto.timingSafeEqualUtf8(
       payload.secret_token,
       this.moyasarConfig.webhookSecret,
     );
@@ -1007,23 +1013,6 @@ export class MoyasarGateway extends BaseGateway {
   private fromMinorUnits(amount: number, currency: string): number {
     const exponent = getCurrencyExponent(currency);
     return amount / 10 ** exponent;
-  }
-
-  private constantTimeEquals(left: string, right: string): boolean {
-    const leftBuffer = Buffer.from(left);
-    const rightBuffer = Buffer.from(right);
-
-    if (leftBuffer.length !== rightBuffer.length) {
-      const length = Math.max(leftBuffer.length, rightBuffer.length);
-      const paddedLeft = Buffer.alloc(length);
-      const paddedRight = Buffer.alloc(length);
-      leftBuffer.copy(paddedLeft);
-      rightBuffer.copy(paddedRight);
-      timingSafeEqual(paddedLeft, paddedRight);
-      return false;
-    }
-
-    return timingSafeEqual(leftBuffer, rightBuffer);
   }
 
   private assertMoyasarWebhookPayload(payload: unknown): MoyasarWebhookPayload {

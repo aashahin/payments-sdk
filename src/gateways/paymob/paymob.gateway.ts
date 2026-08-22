@@ -1,6 +1,6 @@
 // file: packages/payments/src/gateways/paymob.gateway.ts
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { getSyncCrypto } from "../../runtime/sync-crypto";
 import { BaseGateway } from "../base.gateway";
 import type {
   PaymentStatus,
@@ -60,6 +60,14 @@ function isPaymobRetryableError(error: unknown): boolean {
     return typeof status === "number" && (status >= 500 || status === 429);
   }
   return false;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -893,10 +901,18 @@ export class PaymobGateway extends BaseGateway {
         ? this.buildRedirectHmacString(redirectPayload)
         : this.buildHmacString((structuredPayload as PaymobWebhookPayload).obj);
 
-    // Calculate expected HMAC
-    const calculatedHmac = createHmac("sha512", this.paymobConfig.hmacSecret)
-      .update(dataString)
-      .digest("hex");
+    const crypto = getSyncCrypto();
+    if (!crypto) {
+      this.logger.warn(
+        "[Paymob] Synchronous webhook verify is unavailable in this runtime",
+      );
+      return false;
+    }
+
+    const calculatedHmac = crypto.hmacSha512Hex(
+      this.paymobConfig.hmacSecret,
+      dataString,
+    );
 
     return this.safeCompareHex(hmac, calculatedHmac);
   }
@@ -2362,7 +2378,15 @@ export class PaymobGateway extends BaseGateway {
       return false;
     }
 
-    return timingSafeEqual(Buffer.from(actualHex, "hex"), Buffer.from(expectedHex, "hex"));
+    const crypto = getSyncCrypto();
+    if (!crypto) {
+      return false;
+    }
+
+    return crypto.timingSafeEqualBytes(
+      hexToBytes(actualHex),
+      hexToBytes(expectedHex),
+    );
   }
 
   private buildUnifiedCheckoutUrl(clientSecret: string): string {

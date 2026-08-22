@@ -1,6 +1,7 @@
 // file: packages/payments/src/gateways/stripe/stripe.gateway.test.ts
 
 import { describe, it, expect, beforeEach, mock, spyOn } from "bun:test";
+import "../../runtime/install-node-crypto";
 import { StripeGateway } from "./stripe.gateway";
 import { HooksManager } from "../../hooks/hooks.manager";
 import type { StripeConfig } from "../../types/config.types";
