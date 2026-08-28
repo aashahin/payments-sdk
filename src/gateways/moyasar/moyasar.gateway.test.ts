@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import "../../runtime/install-node-crypto";
 import { HooksManager } from "../../hooks/hooks.manager";
 import {
   AuthenticationError,

@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import "../../runtime/install-node-crypto";
 import { PaymobGateway } from "./paymob.gateway";
 import { HooksManager } from "../../hooks/hooks.manager";
 import {

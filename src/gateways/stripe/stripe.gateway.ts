@@ -29,7 +29,7 @@ import {
 } from "../../errors";
 import { withRetry } from "../../utils/retry";
 import type { Logger } from "../../utils/logger";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { getSyncCrypto } from "../../runtime/sync-crypto";
 
 /**
  * Stripe maps transient failures to NetworkError (timeouts, connection errors,
@@ -677,7 +677,11 @@ function validateStripeIdempotencyKey(idempotencyKey?: string): void {
 function resolveStripeIdempotencyKey(idempotencyKey?: string): string {
   const key = idempotencyKey?.trim();
   if (!key) {
-    return randomUUID();
+    const installedCrypto = getSyncCrypto();
+    if (installedCrypto) {
+      return installedCrypto.randomUUID();
+    }
+    return globalThis.crypto.randomUUID();
   }
   validateStripeIdempotencyKey(key);
   return key;
@@ -1474,14 +1478,22 @@ export class StripeGateway extends BaseGateway {
       return false;
     }
 
-    let signedPayload: string | Buffer;
+    const crypto = getSyncCrypto();
+    if (!crypto) {
+      this.logger.warn(
+        "[Stripe] Synchronous webhook verify is unavailable in this runtime",
+      );
+      return false;
+    }
+
+    let signedPayload: string | Uint8Array;
     if (typeof payload === "string") {
       signedPayload = `${timestamp}.${payload}`;
-    } else if (Buffer.isBuffer(payload)) {
-      signedPayload = Buffer.concat([
-        Buffer.from(`${timestamp}.`, "utf8"),
-        payload,
-      ]);
+    } else if (payload instanceof Uint8Array) {
+      const prefix = new TextEncoder().encode(`${timestamp}.`);
+      signedPayload = new Uint8Array(prefix.length + payload.byteLength);
+      signedPayload.set(prefix, 0);
+      signedPayload.set(payload, prefix.length);
     } else {
       this.logger.warn(
         "[Stripe] Webhook verification requires the raw request body",
@@ -1489,17 +1501,15 @@ export class StripeGateway extends BaseGateway {
       return false;
     }
 
-    const hmac = createHmac("sha256", this.stripeConfig.webhookSecret);
-    hmac.update(signedPayload);
-    const expectedSignature = hmac.digest("hex");
+    const expectedSignature = crypto.hmacSha256Hex(
+      this.stripeConfig.webhookSecret,
+      signedPayload,
+    );
 
     return signatures.some((v1Signature) => {
       try {
-        return timingSafeEqual(
-          Buffer.from(expectedSignature),
-          Buffer.from(v1Signature),
-        );
-      } catch (e) {
+        return crypto.timingSafeEqualUtf8(expectedSignature, v1Signature);
+      } catch {
         return false;
       }
     });
@@ -1514,8 +1524,8 @@ export class StripeGateway extends BaseGateway {
     let raw: StripeWebhookPayload;
     if (typeof payload === "string") {
       raw = JSON.parse(payload) as StripeWebhookPayload;
-    } else if (Buffer.isBuffer(payload)) {
-      raw = JSON.parse(payload.toString("utf8")) as StripeWebhookPayload;
+    } else if (payload instanceof Uint8Array) {
+      raw = JSON.parse(new TextDecoder().decode(payload)) as StripeWebhookPayload;
     } else {
       raw = payload as StripeWebhookPayload;
     }

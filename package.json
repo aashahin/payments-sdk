@@ -3,16 +3,30 @@
   "version": "0.8.0",
   "description": "Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integrate Moyasar, PayPal, Paymob, Stripe and other payment gateways with type-safe lifecycle hooks and normalized webhooks.",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./src/index.ts",
+      "source": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./cloudflare": {
+      "types": "./src/cloudflare/index.ts",
+      "source": "./src/cloudflare/index.ts",
+      "import": "./src/cloudflare/index.ts",
+      "default": "./src/cloudflare/index.ts"
+    },
+    "./bun": {
+      "types": "./src/bun/index.ts",
+      "source": "./src/bun/index.ts",
+      "import": "./src/bun/index.ts",
+      "default": "./src/bun/index.ts"
     }
   },
   "files": [
-    "dist",
+    "src",
     "docs",
     "README.md",
     "LICENSE"
@@ -31,7 +45,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.9.3"
+    "@types/node": "^25.0.3",
+    "typescript": "7.0.2"
   },
   "peerDependencies": {},
   "keywords": [

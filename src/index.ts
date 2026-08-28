@@ -5,6 +5,9 @@
  *
  * Framework-agnostic multi-gateway payment SDK with lifecycle hooks.
  * Supports Moyasar, PayPal, Paymob, and Stripe.
+ * Node/Bun barrel. Synchronous webhook HMAC uses `node:crypto`.
+ * Cloudflare Workers must import `@abshahin/payments-sdk/cloudflare` instead —
+ * Worker ingress verifies with WebCrypto in webhook-verify.ts.
  *
  * @example
  * ```typescript
@@ -16,19 +19,6 @@
  *     webhookSecret: process.env.MOYASAR_WEBHOOK_SECRET,
  *   },
  *   defaultGateway: 'moyasar',
- *   hooks: {
- *     beforeCreatePayment: async (ctx) => {
- *       // inspect or mutate ctx.params.amount here
- *       return { proceed: true };
- *     },
- *     afterCreatePayment: async (ctx, result) => {
- *       await analytics.track('payment_created', { status: result.status });
- *       return { proceed: true };
- *     },
- *     onWebhookVerified: async (event) => {
- *       await orderService.updatePaymentStatus(event.paymentId, event.status);
- *     },
- *   },
  * });
  *
  * // Create a payment
@@ -48,134 +38,6 @@
  * ```
  */
 
-// Main client
-export { PaymentClient } from "./client";
+import "./runtime/install-node-crypto";
 
-// Types
-export type {
-  GatewayName,
-  PaymentStatus,
-  RefundStatus,
-  CreatePaymentParams,
-  CaptureParams,
-  RefundParams,
-  VoidParams,
-  GetPaymentParams,
-  MoyasarBackendPaymentSource,
-  MoyasarPaymentSplit,
-  MoyasarAftRecipient,
-  MoyasarAftSender,
-  MoyasarCreatePaymentParams,
-  MoyasarConfirmStcPayOtpParams,
-  PayPalCreatePaymentParams,
-  PaymobCreatePaymentParams,
-  GatewayPaymentResult,
-  GatewayRefundResult,
-  PaymentNextAction,
-  MoyasarStcPayOtpNextAction,
-  RedirectPaymentNextAction,
-  MoyasarNextAction,
-} from "./types/payment.types";
-
-// Moyasar-specific source types
-export type {
-  MoyasarPaymentSource,
-  CreditCardSource,
-  CardTokenSource,
-  ApplePaySource,
-  ApplePayDecryptedSource,
-  SamsungPaySource,
-  StcPaySource,
-} from "./types/moyasar-source.types";
-
-export {
-  isCreditCardSource,
-  isCardTokenSource,
-  isApplePaySource,
-  isSamsungPaySource,
-  isStcPaySource,
-} from "./types/moyasar-source.types";
-
-export type {
-  WebhookEvent,
-  MoyasarWebhookPayload,
-  PayPalWebhookPayload,
-  PaymobWebhookPayload,
-  PaymobCardTokenWebhookPayload,
-  PaymobRedirectWebhookPayload,
-  StripeWebhookPayload,
-} from "./types/webhook.types";
-
-export type {
-  PaymentClientConfig,
-  MoyasarConfig,
-  PayPalConfig,
-  PaymobConfig,
-  PaymobIdempotencyRecord,
-  PaymobIdempotencyStore,
-  StripeConfig,
-  GatewayConfig,
-} from "./types/config.types";
-
-export type {
-  StripeCreatePaymentParams,
-  CreateCheckoutSessionParams,
-} from "./types/validation";
-
-// Hooks
-export type {
-  PaymentHooks,
-  HookContext,
-  BeforeHookResult,
-  AfterHookResult,
-  BeforeHook,
-  AfterHook,
-  ErrorHook,
-  OperationType,
-  WebhookReceivedHook,
-  WebhookVerifiedHook,
-  WebhookFailedHook,
-} from "./hooks/hooks.types";
-
-export { HooksManager } from "./hooks/hooks.manager";
-
-// Utilities (logging, idempotency, retry)
-export type { Logger, LogLevel } from "./utils/logger";
-export { noopLogger, redact, createRedactingLogger } from "./utils/logger";
-export type {
-  IdempotencyStore,
-  IdempotencyRecord,
-  IdempotencyStatus,
-} from "./utils/idempotency";
-export { InMemoryIdempotencyStore, fingerprintParams } from "./utils/idempotency";
-export type { RetryConfig, WithRetryOptions } from "./utils/retry";
-export {
-  withRetry,
-  parseRetryAfterSeconds,
-  DEFAULT_RETRY_CONFIG,
-} from "./utils/retry";
-
-// Gateways (for advanced usage / extension)
-export type { PaymentGateway } from "./gateways/gateway.interface";
-export { BaseGateway } from "./gateways/base.gateway";
-export { MoyasarGateway } from "./gateways/moyasar/moyasar.gateway";
-export { PayPalGateway } from "./gateways/paypal/paypal.gateway";
-export { PaymobGateway } from "./gateways/paymob/paymob.gateway";
-export { StripeGateway } from "./gateways/stripe/stripe.gateway";
-
-// Errors
-export {
-  PaymentError,
-  PaymentAbortedError,
-  GatewayNotConfiguredError,
-  OperationNotSupportedError,
-  InvalidWebhookError,
-  GatewayApiError,
-  CardDeclinedError,
-  InsufficientFundsError,
-  AuthenticationError,
-  RateLimitError,
-  ResourceNotFoundError,
-  InvalidRequestError,
-  NetworkError,
-} from "./errors";
+export * from "./public";
