@@ -3,36 +3,40 @@
   "version": "0.8.0",
   "description": "Unified, framework-agnostic payment SDK for Bun & TypeScript. Seamlessly integrate Moyasar, PayPal, Paymob, Stripe and other payment gateways with type-safe lifecycle hooks and normalized webhooks.",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./dist/index.d.ts",
       "source": "./src/index.ts",
-      "import": "./src/index.ts",
-      "default": "./src/index.ts"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./cloudflare": {
-      "types": "./src/cloudflare/index.ts",
+      "types": "./dist/cloudflare/index.d.ts",
       "source": "./src/cloudflare/index.ts",
-      "import": "./src/cloudflare/index.ts",
-      "default": "./src/cloudflare/index.ts"
+      "import": "./dist/cloudflare/index.js",
+      "default": "./dist/cloudflare/index.js"
     },
     "./bun": {
-      "types": "./src/bun/index.ts",
+      "types": "./dist/bun/index.d.ts",
       "source": "./src/bun/index.ts",
-      "import": "./src/bun/index.ts",
-      "default": "./src/bun/index.ts"
+      "import": "./dist/bun/index.js",
+      "default": "./dist/bun/index.js"
     }
   },
   "files": [
+    "dist",
     "src",
     "docs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external && bun run build:types",
+    "build": "bun run build:node && bun run build:bun && bun run build:cloudflare && bun run build:types",
+    "build:node": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external",
+    "build:bun": "bun build ./src/bun/index.ts --outdir ./dist/bun --target bun --format esm --packages external",
+    "build:cloudflare": "bun build ./src/cloudflare/index.ts --outdir ./dist/cloudflare --target browser --format esm --packages external",
     "build:types": "tsc --emitDeclarationOnly --declaration --outDir dist",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
